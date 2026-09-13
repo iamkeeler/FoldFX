@@ -17,17 +17,16 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import kotlin.math.PI
-import kotlin.math.sin
 
 /**
  * Always-on foreground service that watches the hinge-angle sensor and
  * drives the fold/unfold transition overlay.
  *
  * Hinge angle 0° (closed) -> 180° (flat) is mapped to an effect progress
- * that peaks mid-fold: 0 when settled, 1 around 90°.
+ * that peaks mid-fold: 0 when settled (with a dead zone so real-world
+ * sensor idle values fully release the effect), 1 around 90°.
  */
 class FoldEffectService : Service() {
 
@@ -35,11 +34,12 @@ class FoldEffectService : Service() {
     private lateinit var prefs: Prefs
     private lateinit var hinge: HingeMonitor
     private lateinit var overlays: FoldOverlayManager
+    private var started = false
 
     override fun onCreate() {
         super.onCreate()
         prefs = Prefs(this)
-        hinge = HingeMonitor(this)
+        hinge = HingeMonitor(applicationContext)
         overlays = FoldOverlayManager(applicationContext).apply {
             setEffectId(prefs.effectId)
             intensity = prefs.intensity
@@ -49,12 +49,23 @@ class FoldEffectService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_PAUSE, ACTION_STOP -> {
+            ACTION_PAUSE -> {
                 prefs.enabled = false
                 stopSelf()
                 return START_NOT_STICKY
             }
+            ACTION_REFRESH -> {
+                // Settings changed while running: apply live, no re-registration.
+                overlays.setEffectId(prefs.effectId)
+                overlays.intensity = prefs.intensity
+                if (started) return START_STICKY
+                // else: the service was (re)created just for this — fall
+                // through and bring it fully up below instead of lingering
+                // as a zombie with no sensor, no overlay, no notification.
+            }
         }
+        if (started) return START_STICKY
+        started = true
 
         startForeground(NOTIFICATION_ID, buildNotification())
 
@@ -68,14 +79,15 @@ class FoldEffectService : Service() {
         hinge.start()
         overlays.start()
         scope.launch {
-            hinge.angle.collectLatest { angle ->
-                overlays.setProgress(angleToProgress(angle))
+            hinge.angle.collect { angle ->
+                overlays.setTargetProgress(angleToProgress(angle))
             }
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
+        started = false
         hinge.stop()
         overlays.stop()
         scope.cancel()
@@ -84,9 +96,19 @@ class FoldEffectService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * Maps hinge angle to effect progress with a dead zone at each settled
+     * end: real sensors idle a few degrees off 0°/180°, and without the dead
+     * zone the overlay would stay faintly attached forever at rest.
+     * Smoothstep gives buttery ends with linear mid-travel.
+     */
     private fun angleToProgress(angle: Float?): Float {
         if (angle == null) return 0f
-        return sin(PI.toFloat() * angle.coerceIn(0f, 180f) / 180f).coerceIn(0f, 1f)
+        val a = angle.coerceIn(0f, 180f)
+        val opening = ((a - EDGE_DEG) / (90f - EDGE_DEG)).coerceIn(0f, 1f)
+        val closing = ((180f - EDGE_DEG - a) / (90f - EDGE_DEG)).coerceIn(0f, 1f)
+        val raw = minOf(opening, closing)
+        return raw * raw * (3f - 2f * raw)
     }
 
     private fun createChannel() {
@@ -118,9 +140,10 @@ class FoldEffectService : Service() {
 
     companion object {
         const val ACTION_PAUSE = "com.keeler.foldfx.action.PAUSE"
-        const val ACTION_STOP = "com.keeler.foldfx.action.STOP"
+        const val ACTION_REFRESH = "com.keeler.foldfx.action.REFRESH"
         private const val CHANNEL_ID = "foldfx_status"
         private const val NOTIFICATION_ID = 1001
+        private const val EDGE_DEG = 6f
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, FoldEffectService::class.java))
@@ -128,6 +151,13 @@ class FoldEffectService : Service() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, FoldEffectService::class.java))
+        }
+
+        /** Applies settings changes to a running service without restarting it. */
+        fun refresh(context: Context) {
+            context.startService(
+                Intent(context, FoldEffectService::class.java).setAction(ACTION_REFRESH),
+            )
         }
     }
 }

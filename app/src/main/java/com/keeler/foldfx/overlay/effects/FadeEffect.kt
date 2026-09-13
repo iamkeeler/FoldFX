@@ -12,10 +12,10 @@ class FadeEffect : FoldEffect {
     private val paint = Paint()
 
     override fun render(canvas: Canvas, progress: Float, width: Int, height: Int, intensity: Float) {
-        val p = progress.coerceIn(0f, 1f)
-        if (p <= 0f) return
+        val p = FoldEffect.activeProgress(progress) ?: return
         paint.color = 0xFF000000.toInt()
-        paint.alpha = (p * 200 * intensity).toInt().coerceIn(0, 235)
+        // Never fully black: a hint of the screen stays visible even mid-fold.
+        paint.alpha = FoldEffect.scaledAlpha(p, 200f, intensity, 235)
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
     }
 }

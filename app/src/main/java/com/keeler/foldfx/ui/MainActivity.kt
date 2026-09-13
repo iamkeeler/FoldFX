@@ -47,17 +47,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
-import com.keeler.foldfx.overlay.effects.BookFoldEffect
-import com.keeler.foldfx.overlay.effects.FadeEffect
+import com.keeler.foldfx.overlay.effects.EffectCatalog
 import com.keeler.foldfx.overlay.effects.FoldEffect
-import com.keeler.foldfx.overlay.effects.PageTurnEffect
 import com.keeler.foldfx.prefs.Prefs
 import com.keeler.foldfx.service.FoldEffectService
+import com.keeler.foldfx.service.hingeSensor
 
 class MainActivity : ComponentActivity() {
-
-    private val effectCatalog: List<FoldEffect> =
-        listOf(BookFoldEffect(), FadeEffect(), PageTurnEffect())
 
     /** Bumped on every onResume so permission/pref state re-reads. */
     private var resumeTick by mutableStateOf(0)
@@ -67,7 +63,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 key(resumeTick) {
-                    FoldFxSettingsScreen(effectCatalog)
+                    FoldFxSettingsScreen(EffectCatalog.all)
                 }
             }
         }
@@ -79,23 +75,24 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private data class HingeUiState(val hasSensor: Boolean, val angle: MutableState<Float?>)
-
+/**
+ * The live hinge angle, or null on devices without a hinge-angle sensor.
+ * Null doubles as the "sensor missing" signal — no wrapper type needed.
+ */
 @Composable
-private fun rememberHingeState(): HingeUiState {
+private fun rememberHingeAngle(): MutableState<Float?>? {
     val context = LocalContext.current
-    val state = remember {
-        val sm = context.getSystemService(SensorManager::class.java)
-        val sensor = sm.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE)
-        HingeUiState(sensor != null, mutableStateOf<Float?>(null))
+    val angle = remember { mutableStateOf<Float?>(null) }
+    val hasSensor = remember {
+        context.getSystemService(SensorManager::class.java).hingeSensor() != null
     }
-    DisposableEffect(state.hasSensor) {
-        if (!state.hasSensor) return@DisposableEffect onDispose {}
+    DisposableEffect(hasSensor) {
+        if (!hasSensor) return@DisposableEffect onDispose {}
         val sm = context.getSystemService(SensorManager::class.java)
-        val sensor = sm.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE)!!
+        val sensor = sm.hingeSensor() ?: return@DisposableEffect onDispose {}
         val listener = object : SensorEventListener {
             override fun onSensorChanged(e: SensorEvent) {
-                state.angle.value = e.values[0]
+                angle.value = e.values[0]
             }
 
             override fun onAccuracyChanged(s: Sensor, a: Int) = Unit
@@ -103,7 +100,7 @@ private fun rememberHingeState(): HingeUiState {
         sm.registerListener(listener, sensor, SensorManager.SENSOR_DELAY_UI)
         onDispose { sm.unregisterListener(listener) }
     }
-    return state
+    return angle.takeIf { hasSensor }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -111,7 +108,7 @@ private fun rememberHingeState(): HingeUiState {
 private fun FoldFxSettingsScreen(effects: List<FoldEffect>) {
     val context = LocalContext.current
     val prefs = remember { Prefs(context) }
-    val hinge = rememberHingeState()
+    val hingeAngle = rememberHingeAngle()
 
     var enabled by remember { mutableStateOf(prefs.enabled) }
     var effectId by remember { mutableStateOf(prefs.effectId) }
@@ -139,8 +136,8 @@ private fun FoldFxSettingsScreen(effects: List<FoldEffect>) {
                 Column(Modifier.padding(16.dp)) {
                     Text("Hinge sensor", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(4.dp))
-                    if (hinge.hasSensor) {
-                        val angle = hinge.angle.value
+                    if (hingeAngle != null) {
+                        val angle = hingeAngle.value
                         Text(
                             if (angle == null) "Sensor found — waiting for first reading…"
                             else "Angle: ${angle.toInt()}°  (0 = closed, 180 = flat)",
@@ -165,7 +162,7 @@ private fun FoldFxSettingsScreen(effects: List<FoldEffect>) {
                     }
                     Switch(
                         checked = enabled,
-                        enabled = hinge.hasSensor,
+                        enabled = hingeAngle != null,
                         onCheckedChange = { on ->
                             if (on && !Settings.canDrawOverlays(context)) {
                                 context.openOverlaySettings()
@@ -195,7 +192,8 @@ private fun FoldFxSettingsScreen(effects: List<FoldEffect>) {
                                     onClick = {
                                         effectId = effect.id
                                         prefs.effectId = effect.id
-                                        if (enabled) FoldEffectService.start(context) // re-delivers prefs
+                                        // Applies live to the running service, no restart.
+                                        if (enabled) FoldEffectService.refresh(context)
                                     },
                                 )
                                 .padding(vertical = 8.dp),
@@ -220,6 +218,10 @@ private fun FoldFxSettingsScreen(effects: List<FoldEffect>) {
                         onValueChange = {
                             intensity = it
                             prefs.intensity = it
+                        },
+                        // One refresh per gesture, not one per drag tick.
+                        onValueChangeFinished = {
+                            if (enabled) FoldEffectService.refresh(context)
                         },
                         valueRange = 0.5f..1.5f,
                     )
