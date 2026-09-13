@@ -4,17 +4,22 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- Folding book: single thick rounded stroke, soft corners -->
     <path
-        android:fillColor="#101114"
-        android:pathData="M0,0h108v108h-108z" />
+        android:strokeColor="#2E7CFF"
+        android:strokeWidth="6.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M54,42 C46,34 38,32 30,35 Q26,37 26,43 L26,68 Q26,74 32,74 C40,74 48,76 54,78" />
     <path
-        android:fillColor="#4A7CFF"
-        android:pathData="M28,30h20v48h-20z" />
+        android:strokeColor="#2E7CFF"
+        android:strokeWidth="6.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M54,42 C62,34 70,32 78,35 Q82,37 82,43 L82,68 Q82,74 76,74 C68,74 60,76 54,78" />
     <path
-        android:fillColor="#8FAEFF"
-        android:pathData="M60,30h20v48h-20z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:fillAlpha="0.65"
-        android:pathData="M53,30h2v48h-2z" />
+        android:strokeColor="#2E7CFF"
+        android:strokeWidth="6.5"
+        android:strokeLineCap="round"
+        android:pathData="M54,44 L54,76" />
 </vector>
