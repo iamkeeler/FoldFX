@@ -9,10 +9,8 @@ import android.util.Log
 import android.view.Choreographer
 import android.view.Display
 import android.view.WindowManager
-import com.keeler.foldfx.overlay.effects.BookFoldEffect
-import com.keeler.foldfx.overlay.effects.FadeEffect
+import com.keeler.foldfx.overlay.effects.EffectCatalog
 import com.keeler.foldfx.overlay.effects.FoldEffect
-import com.keeler.foldfx.overlay.effects.PageTurnEffect
 import java.util.function.Consumer
 import kotlin.math.abs
 import kotlin.math.exp
@@ -51,10 +49,8 @@ class FoldOverlayManager(private val appContext: Context) {
     /** displayId -> overlay */
     private val overlays = mutableMapOf<Int, AttachedOverlay>()
 
-    val effects: List<FoldEffect> =
-        listOf(BookFoldEffect(), FadeEffect(), PageTurnEffect())
-
-    var activeEffect: FoldEffect = effects[0]
+    var activeEffect: FoldEffect = EffectCatalog.all.first()
+        private set
     var intensity: Float = 1f
         set(value) {
             if (value == field) return
@@ -65,7 +61,7 @@ class FoldOverlayManager(private val appContext: Context) {
         }
 
     /** Blur radius in px at full progress; density-scaled, the system may clamp it. */
-    var maxBlurRadiusPx: Int =
+    val maxBlurRadiusPx: Int =
         (BLUR_RADIUS_DP * appContext.resources.displayMetrics.density).toInt()
 
     private var blurSupported: Boolean = true
@@ -157,7 +153,7 @@ class FoldOverlayManager(private val appContext: Context) {
     }
 
     fun setEffectId(id: String) {
-        effects.firstOrNull { it.id == id }?.let {
+        EffectCatalog.all.firstOrNull { it.id == id }?.let {
             if (it == activeEffect) return
             activeEffect = it
             // Invalidate: attached views may be converged (e.g. phone held
@@ -194,6 +190,9 @@ class FoldOverlayManager(private val appContext: Context) {
         }
     }
 
+    /** Sub-6px blur steps are invisible; each push is a WindowManager IPC. */
+    private fun quantizeRadius(raw: Int) = raw - (raw % BLUR_QUANTUM_PX)
+
     /** Pushes eased progress to views and the quantized blur radius. */
     private fun pushToOverlays() {
         for ((id, overlay) in overlays) {
@@ -206,9 +205,7 @@ class FoldOverlayManager(private val appContext: Context) {
             } else {
                 0
             }
-            // Quantize: sub-6px blur steps are invisible, and each push is a
-            // WindowManager IPC + SurfaceFlinger recompute.
-            val quantized = radius - (radius % BLUR_QUANTUM_PX)
+            val quantized = quantizeRadius(radius)
             if (overlay.lastRadius != quantized) {
                 overlay.lastRadius = quantized
                 overlay.params.setBlurBehindRadius(quantized)
@@ -258,8 +255,7 @@ class FoldOverlayManager(private val appContext: Context) {
             // Quantized to match pushToOverlays, so the first eased push
             // after attach doesn't fire a redundant updateViewLayout.
             val initialRadius = if (blurSupported) {
-                val raw = (renderedProgress * maxBlurRadiusPx * intensity).toInt()
-                raw - (raw % BLUR_QUANTUM_PX)
+                quantizeRadius((renderedProgress * maxBlurRadiusPx * intensity).toInt())
             } else {
                 0
             }

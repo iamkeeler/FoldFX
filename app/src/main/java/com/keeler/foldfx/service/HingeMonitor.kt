@@ -8,6 +8,9 @@ import android.hardware.SensorManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
+/** Null on devices without a hinge-angle sensor (older Folds report only coarse postures). */
+fun SensorManager.hingeSensor(): Sensor? = getDefaultSensor(Sensor.TYPE_HINGE_ANGLE)
+
 /**
  * Watches the hinge-angle sensor.
  *
@@ -20,8 +23,7 @@ class HingeMonitor(context: Context) {
     private val sensorManager =
         context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
-    val hingeSensor: Sensor? =
-        sensorManager.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE)
+    private val hingeSensor: Sensor? = sensorManager.hingeSensor()
 
     val hasHingeSensor: Boolean get() = hingeSensor != null
 

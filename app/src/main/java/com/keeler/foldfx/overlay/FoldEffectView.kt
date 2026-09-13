@@ -35,6 +35,9 @@ class FoldEffectView(context: Context) : View(context) {
     }
 
     companion object {
+        // Must stay below the manager's SETTLE_EPSILON (0.001f): the final
+        // eased snap has to clear this threshold, or the last frame never
+        // redraws and the effect freezes one frame early.
         private const val PROGRESS_EPSILON = 0.0005f
     }
 }

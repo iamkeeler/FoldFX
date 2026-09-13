@@ -19,7 +19,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import kotlin.math.min
+
 
 /**
  * Always-on foreground service that watches the hinge-angle sensor and
@@ -40,7 +40,7 @@ class FoldEffectService : Service() {
     override fun onCreate() {
         super.onCreate()
         prefs = Prefs(this)
-        hinge = HingeMonitor(this)
+        hinge = HingeMonitor(applicationContext)
         overlays = FoldOverlayManager(applicationContext).apply {
             setEffectId(prefs.effectId)
             intensity = prefs.intensity
@@ -108,7 +108,7 @@ class FoldEffectService : Service() {
         val a = angle.coerceIn(0f, 180f)
         val opening = ((a - EDGE_DEG) / (90f - EDGE_DEG)).coerceIn(0f, 1f)
         val closing = ((180f - EDGE_DEG - a) / (90f - EDGE_DEG)).coerceIn(0f, 1f)
-        val raw = min(opening, closing)
+        val raw = minOf(opening, closing)
         return raw * raw * (3f - 2f * raw)
     }
 
