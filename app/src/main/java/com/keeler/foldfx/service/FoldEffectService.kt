@@ -50,7 +50,7 @@ class FoldEffectService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_PAUSE, ACTION_STOP -> {
+            ACTION_PAUSE -> {
                 prefs.enabled = false
                 stopSelf()
                 return START_NOT_STICKY
@@ -141,7 +141,6 @@ class FoldEffectService : Service() {
 
     companion object {
         const val ACTION_PAUSE = "com.keeler.foldfx.action.PAUSE"
-        const val ACTION_STOP = "com.keeler.foldfx.action.STOP"
         const val ACTION_REFRESH = "com.keeler.foldfx.action.REFRESH"
         private const val CHANNEL_ID = "foldfx_status"
         private const val NOTIFICATION_ID = 1001

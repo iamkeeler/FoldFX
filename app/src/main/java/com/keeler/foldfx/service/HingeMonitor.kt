@@ -42,6 +42,9 @@ class HingeMonitor(context: Context) {
             // matters more than rate, and the sensor hub barely notices.
             // Rendering is decoupled via Choreographer easing in the overlay
             // manager, so this never needs to match the display refresh.
+            // Accepted tradeoff: the sensor streams 24/7 while enabled, even
+            // parked at rest. Batching (maxReportLatencyUs) would cut wakeups
+            // but add exactly the latency this effect can't afford.
             sensorManager.registerListener(listener, it, SensorManager.SENSOR_DELAY_GAME)
         }
     }

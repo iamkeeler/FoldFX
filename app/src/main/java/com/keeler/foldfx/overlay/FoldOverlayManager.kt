@@ -122,9 +122,7 @@ class FoldOverlayManager(private val appContext: Context) {
                 targetProgress = 0f
             }
 
-            if (renderedProgress != targetProgress || targetProgress > DETACH_THRESHOLD ||
-                overlays.isNotEmpty()
-            ) {
+            if (renderedProgress != targetProgress || overlays.isNotEmpty()) {
                 scheduleFrame()
             } else {
                 lastFrameNanos = 0L // parked: zero cost at rest
@@ -159,12 +157,17 @@ class FoldOverlayManager(private val appContext: Context) {
     /**
      * progress: 0 = settled (closed or flat), 1 = mid-fold. Cheap: records the
      * target and manages overlay lifetime. Actual rendering happens on the
-     * Choreographer loop. Attach at 0.03; release happens once the *eased*
-     * progress settles below 0.012, so fast folds fade out instead of popping.
+     * Choreographer loop.
+     *
+     * Sub-attach targets snap to zero: without the snap, a target parked
+     * between the detach (0.012) and attach (0.03) thresholds could never
+     * satisfy either condition — spinning the Choreographer forever and/or
+     * leaving a faint overlay stuck. The eased value still gives the smooth
+     * fade-out; release detaches once it settles below 0.012.
      */
     fun setTargetProgress(progress: Float) {
-        targetProgress = progress
-        if (progress > ATTACH_THRESHOLD) {
+        targetProgress = if (progress > ATTACH_THRESHOLD) progress else 0f
+        if (targetProgress > ATTACH_THRESHOLD) {
             for (display in displayManager.displays) {
                 if (display.state == Display.STATE_ON) maybeAttach(display)
             }
@@ -181,8 +184,7 @@ class FoldOverlayManager(private val appContext: Context) {
 
     /** Pushes eased progress to views and the quantized blur radius. */
     private fun pushToOverlays() {
-        for (id in overlays.keys.toList()) {
-            val overlay = overlays[id] ?: continue
+        for ((id, overlay) in overlays) {
             overlay.view.effect = activeEffect
             overlay.view.intensity = intensity
             overlay.view.progress = renderedProgress
@@ -197,7 +199,16 @@ class FoldOverlayManager(private val appContext: Context) {
             if (overlay.lastRadius != quantized) {
                 overlay.lastRadius = quantized
                 overlay.params.setBlurBehindRadius(quantized)
-                overlay.windowManager.updateViewLayout(overlay.view, overlay.params)
+                // The overlay permission can be revoked mid-fold, tearing our
+                // windows down out from under us: never let the frame
+                // callback die on it.
+                val ok = runCatching {
+                    overlay.windowManager.updateViewLayout(overlay.view, overlay.params)
+                }.isSuccess
+                if (!ok) {
+                    detach(id)
+                    break // map mutated; remaining overlays resume next frame
+                }
             }
         }
     }
@@ -231,8 +242,11 @@ class FoldOverlayManager(private val appContext: Context) {
                 layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
+            // Quantized to match pushToOverlays, so the first eased push
+            // after attach doesn't fire a redundant updateViewLayout.
             val initialRadius = if (blurSupported) {
-                (renderedProgress * maxBlurRadiusPx * intensity).toInt()
+                val raw = (renderedProgress * maxBlurRadiusPx * intensity).toInt()
+                raw - (raw % BLUR_QUANTUM_PX)
             } else {
                 0
             }
