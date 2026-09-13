@@ -20,7 +20,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
-
 /**
  * Always-on foreground service that watches the hinge-angle sensor and
  * drives the fold/unfold transition overlay.

@@ -1,7 +1,7 @@
 # FoldFX
 
-System-wide fold/unfold transition effects for Android foldables — a book-style
-"book opening" effect: as the hinge moves, the screen blurs and a light sweep travels
+System-wide fold/unfold transition effects for Android foldables — a book-opening
+effect: as the hinge moves, the screen blurs and a light sweep travels
 across the folding glass, then everything settles as the device goes flat.
 
 This is an **experimental tech demo**, not a polished product. See [Limitations](#limitations).
@@ -35,7 +35,7 @@ hinge-angle sensor → FoldEffectService → target progress 0..1 → FoldOverla
 - **Effects** implement `FoldEffect` (`overlay/effects/`), listed in one place:
   `EffectCatalog.all`. v1 ships three:
   - **Book Fold** — a book-style foldable mimic: blur + darkening scrim + travelling light sweep + spine glow
-  - **Fade** — simple fade to black mid-fold
+  - **Fade** — a dark fade mid-fold (never fully black; a hint of the screen stays visible)
   - **Page Turn** — a glass page lifting in 3D around the spine
 
 Adding a new visual = one new `FoldEffect` class + one entry in

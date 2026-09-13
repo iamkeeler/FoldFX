@@ -5,7 +5,6 @@ import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Shader
 
-
 /**
  * The book-style foldable mimic: the compositor blurs everything behind the
  * overlay (see [com.keeler.foldfx.overlay.FoldOverlayManager]) while this
