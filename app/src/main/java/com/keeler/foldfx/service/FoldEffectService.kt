@@ -59,7 +59,10 @@ class FoldEffectService : Service() {
                 // Settings changed while running: apply live, no re-registration.
                 overlays.setEffectId(prefs.effectId)
                 overlays.intensity = prefs.intensity
-                return START_STICKY
+                if (started) return START_STICKY
+                // else: the service was (re)created just for this — fall
+                // through and bring it fully up below instead of lingering
+                // as a zombie with no sensor, no overlay, no notification.
             }
         }
         if (started) return START_STICKY

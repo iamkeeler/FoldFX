@@ -221,7 +221,9 @@ private fun FoldFxSettingsScreen(effects: List<FoldEffect>) {
                         onValueChange = {
                             intensity = it
                             prefs.intensity = it
-                            // Applies live to the running service, no restart.
+                        },
+                        // One refresh per gesture, not one per drag tick.
+                        onValueChangeFinished = {
                             if (enabled) FoldEffectService.refresh(context)
                         },
                         valueRange = 0.5f..1.5f,

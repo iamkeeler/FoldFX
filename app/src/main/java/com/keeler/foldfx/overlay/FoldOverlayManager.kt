@@ -79,7 +79,18 @@ class FoldOverlayManager(private val appContext: Context) {
         }
 
         override fun onDisplayRemoved(displayId: Int) = detach(displayId)
-        override fun onDisplayChanged(displayId: Int) = Unit
+
+        override fun onDisplayChanged(displayId: Int) {
+            // A display can power on/off with no hinge motion (no sensor
+            // events), e.g. pressing power while held half-open: keep overlay
+            // membership in sync with the actual display state.
+            val display = displayManager.getDisplay(displayId) ?: return
+            if (display.state == Display.STATE_ON) {
+                if (targetProgress > ATTACH_THRESHOLD) maybeAttach(display)
+            } else {
+                detach(displayId)
+            }
+        }
     }
 
     private val blurListener = Consumer<Boolean> { enabled -> blurSupported = enabled }
@@ -103,7 +114,17 @@ class FoldOverlayManager(private val appContext: Context) {
             }
             pushToOverlays()
 
-            if (renderedProgress != targetProgress || targetProgress > DETACH_THRESHOLD) {
+            // Release only once the *eased* value settles: detaching on the
+            // raw sensor target would pop the effect off mid-fade on fast folds.
+            if (targetProgress <= DETACH_THRESHOLD && renderedProgress <= DETACH_THRESHOLD) {
+                for (id in overlays.keys.toList()) detach(id)
+                renderedProgress = 0f
+                targetProgress = 0f
+            }
+
+            if (renderedProgress != targetProgress || targetProgress > DETACH_THRESHOLD ||
+                overlays.isNotEmpty()
+            ) {
                 scheduleFrame()
             } else {
                 lastFrameNanos = 0L // parked: zero cost at rest
@@ -138,8 +159,8 @@ class FoldOverlayManager(private val appContext: Context) {
     /**
      * progress: 0 = settled (closed or flat), 1 = mid-fold. Cheap: records the
      * target and manages overlay lifetime. Actual rendering happens on the
-     * Choreographer loop. Hysteresis (attach 0.03 / detach 0.012) stops
-     * flicker when the sensor hovers near the threshold.
+     * Choreographer loop. Attach at 0.03; release happens once the *eased*
+     * progress settles below 0.012, so fast folds fade out instead of popping.
      */
     fun setTargetProgress(progress: Float) {
         targetProgress = progress
@@ -147,10 +168,6 @@ class FoldOverlayManager(private val appContext: Context) {
             for (display in displayManager.displays) {
                 if (display.state == Display.STATE_ON) maybeAttach(display)
             }
-        } else if (progress < DETACH_THRESHOLD && overlays.isNotEmpty()) {
-            for (id in overlays.keys.toList()) detach(id)
-            renderedProgress = 0f
-            targetProgress = 0f
         }
         scheduleFrame()
     }
@@ -189,6 +206,7 @@ class FoldOverlayManager(private val appContext: Context) {
         appContext.getSystemService(WindowManager::class.java)
 
     private fun maybeAttach(display: Display) {
+        if (display.state != Display.STATE_ON) return // may have changed during the settle delay
         if (overlays.containsKey(display.displayId)) return
         if (targetProgress <= ATTACH_THRESHOLD) return
         try {

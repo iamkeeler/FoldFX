@@ -12,9 +12,10 @@ import kotlin.math.min
  * draws a darkening scrim, a light sweep travelling across the "folding
  * glass", and a soft glow along the spine crease.
  *
- * Zero-allocation render path: the sweep gradient is built once per band
- * width in band-local coordinates and moved with the canvas matrix, so a
- * fold at 120 Hz never touches the allocator.
+ * Zero-allocation render path: the sweep gradient is built once in unit
+ * coordinates and moved/scaled with the canvas matrix, so a fold at 120 Hz
+ * never touches the allocator — even with inner + outer displays rendering
+ * the same shared effect instance.
  */
 class BookFoldEffect : FoldEffect {
 
@@ -25,14 +26,15 @@ class BookFoldEffect : FoldEffect {
     private val sweepPaint = Paint()
     private val spinePaint = Paint()
 
-    private var cachedBandW = -1f
-
-    /** Gradient in band-local coords (-bandW -> +bandW); the canvas moves it. */
-    private fun sweepShader(bandW: Float): Shader {
-        if (bandW != cachedBandW) {
-            cachedBandW = bandW
+    /**
+     * Gradient in unit coordinates (-1 -> +1); the canvas matrix both moves
+     * and scales the band, so one shader serves every display size with zero
+     * per-frame allocation — even with inner + outer displays rendering.
+     */
+    private fun sweepShader(): Shader {
+        if (sweepPaint.shader == null) {
             sweepPaint.shader = LinearGradient(
-                -bandW, 0f, bandW, 0f,
+                -1f, 0f, 1f, 0f,
                 intArrayOf(0x00000000, 0x55FFFFFF, 0x00000000),
                 floatArrayOf(0f, 0.5f, 1f),
                 Shader.TileMode.CLAMP,
@@ -54,16 +56,17 @@ class BookFoldEffect : FoldEffect {
         scrimPaint.alpha = (p * 90 * intensity).toInt().coerceIn(0, 160)
         canvas.drawRect(0f, 0f, w, h, scrimPaint)
 
-        // Light sweep travelling with the fold. The band is drawn in local
-        // coords and positioned by the canvas matrix: skew gives the
+        // Light sweep travelling with the fold. The band is drawn in unit-x
+        // and positioned by the canvas matrix: scale sizes it, skew gives the
         // tilted-glass slant, translate moves it across the screen.
         val bandW = w * 0.28f
         val sweepX = w * (0.15f + 0.7f * p)
-        sweepShader(bandW)
+        sweepShader()
         val checkpoint = canvas.save()
         canvas.translate(sweepX, 0f)
         canvas.skew(-0.18f, 0f)
-        canvas.drawRect(-bandW, -h * 0.2f, bandW, h * 1.2f, sweepPaint)
+        canvas.scale(bandW, 1f)
+        canvas.drawRect(-1f, -h * 0.2f, 1f, h * 1.2f, sweepPaint)
         canvas.restoreToCount(checkpoint)
 
         // Crease glow along the spine, strongest mid-fold.

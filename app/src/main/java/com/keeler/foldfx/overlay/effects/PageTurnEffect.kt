@@ -4,7 +4,6 @@ import android.graphics.Camera
 import android.graphics.Canvas
 import android.graphics.Matrix
 import android.graphics.Paint
-import android.graphics.RectF
 
 /**
  * A glass "page" that lifts and rotates in 3D around the spine as the fold
@@ -49,7 +48,8 @@ class PageTurnEffect : FoldEffect {
         pagePaint.color = 0xFFFFFFFF.toInt()
         pagePaint.alpha = (p * 46 * intensity).toInt().coerceIn(0, 90)
         val inset = w * 0.06f
-        canvas.drawRoundRect(RectF(inset, h * 0.08f, w - inset, h * 0.92f), 32f, 32f, pagePaint)
+        // Float overload: no RectF allocation on the draw path.
+        canvas.drawRoundRect(inset, h * 0.08f, w - inset, h * 0.92f, 32f, 32f, pagePaint)
         canvas.restoreToCount(checkpoint)
     }
 }

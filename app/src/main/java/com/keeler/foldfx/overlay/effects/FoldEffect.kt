@@ -6,8 +6,8 @@ import android.graphics.Canvas
  * A pluggable fold-transition visual.
  *
  * [progress] is 0 when the device is settled (fully closed or fully flat)
- * and ramps to 1 mid-fold. Render fast: this runs every sensor update while
- * the device is moving, so avoid allocations in [render].
+ * and ramps to 1 mid-fold. Render fast: this runs every frame while the
+ * effect is active, so avoid allocations in [render].
  */
 interface FoldEffect {
     val id: String
