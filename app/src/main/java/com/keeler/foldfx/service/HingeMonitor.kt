@@ -38,9 +38,11 @@ class HingeMonitor(context: Context) {
 
     fun start() {
         hingeSensor?.let {
-            // SENSOR_DELAY_UI is plenty: hinge motion is slow, and it keeps
-            // the sensor hub (and battery) happy while always-on.
-            sensorManager.registerListener(listener, it, SensorManager.SENSOR_DELAY_UI)
+            // GAME rate (~20ms): latency between physical hinge and effect
+            // matters more than rate, and the sensor hub barely notices.
+            // Rendering is decoupled via Choreographer easing in the overlay
+            // manager, so this never needs to match the display refresh.
+            sensorManager.registerListener(listener, it, SensorManager.SENSOR_DELAY_GAME)
         }
     }
 

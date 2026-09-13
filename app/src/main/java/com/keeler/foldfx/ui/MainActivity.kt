@@ -195,7 +195,8 @@ private fun FoldFxSettingsScreen(effects: List<FoldEffect>) {
                                     onClick = {
                                         effectId = effect.id
                                         prefs.effectId = effect.id
-                                        if (enabled) FoldEffectService.start(context) // re-delivers prefs
+                                        // Applies live to the running service, no restart.
+                                        if (enabled) FoldEffectService.refresh(context)
                                     },
                                 )
                                 .padding(vertical = 8.dp),
@@ -220,6 +221,8 @@ private fun FoldFxSettingsScreen(effects: List<FoldEffect>) {
                         onValueChange = {
                             intensity = it
                             prefs.intensity = it
+                            // Applies live to the running service, no restart.
+                            if (enabled) FoldEffectService.refresh(context)
                         },
                         valueRange = 0.5f..1.5f,
                     )
