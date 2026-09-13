@@ -7,7 +7,7 @@ import android.graphics.Shader
 import kotlin.math.min
 
 /**
- * The iPhone-Duo-style mimic: the compositor blurs everything behind the
+ * The book-style foldable mimic: the compositor blurs everything behind the
  * overlay (see [com.keeler.foldfx.overlay.FoldOverlayManager]) while this
  * draws a darkening scrim, a light sweep travelling across the "folding
  * glass", and a soft glow along the spine crease.

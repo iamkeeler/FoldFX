@@ -56,6 +56,13 @@ class FoldOverlayManager(private val appContext: Context) {
 
     var activeEffect: FoldEffect = effects[0]
     var intensity: Float = 1f
+        set(value) {
+            if (value == field) return
+            field = value
+            // Same invalidate reasoning as setEffectId: converged views
+            // don't redraw on their own.
+            overlays.values.forEach { it.view.invalidate() }
+        }
 
     /** Blur radius in px at full progress; density-scaled, the system may clamp it. */
     var maxBlurRadiusPx: Int =
@@ -150,8 +157,13 @@ class FoldOverlayManager(private val appContext: Context) {
     }
 
     fun setEffectId(id: String) {
-        effects.firstOrNull { it.id == id }?.let { activeEffect = it }
-        overlays.values.forEach { it.view.effect = activeEffect }
+        effects.firstOrNull { it.id == id }?.let {
+            if (it == activeEffect) return
+            activeEffect = it
+            // Invalidate: attached views may be converged (e.g. phone held
+            // half-open) and wouldn't otherwise redraw on a settings change.
+            overlays.values.forEach { o -> o.view.effect = it; o.view.invalidate() }
+        }
     }
 
     /**
@@ -185,8 +197,9 @@ class FoldOverlayManager(private val appContext: Context) {
     /** Pushes eased progress to views and the quantized blur radius. */
     private fun pushToOverlays() {
         for ((id, overlay) in overlays) {
-            overlay.view.effect = activeEffect
-            overlay.view.intensity = intensity
+            // effect/intensity are set at attach and on settings change;
+            // only progress is pushed per frame (and only invalidates on
+            // real change, see FoldEffectView).
             overlay.view.progress = renderedProgress
             val radius = if (blurSupported) {
                 (renderedProgress * maxBlurRadiusPx * intensity).toInt()
