@@ -1,11 +1,12 @@
 # FoldFX
 
 Duo-inspired fold diffusion for Android book-style foldables. The **Duo Diffusion**
-effect can project a temporary screen image onto a fixed virtual plane: the page
-appears to stay behind the folding glass, with a sharp crease and progressively
-softer, darker detail toward the free edge. The live app returns when flat.
+effect holds a temporary screen image in place: icons retain their position and
+size while diffusion and local optical spread change with the hinge angle. The
+crease stays sharp, with softer, darker detail toward the moving edge. The live
+app returns when flat. There is no perspective scaling, sliding, or edge reveal.
 
-This is an experimental approximation, calibrated for a front-on view. It is not
+This is an experimental approximation. It is not
 an OS-integrated transition and cannot control when Android powers each panel on
 or off.
 
@@ -19,10 +20,10 @@ or off.
 5. Fold and unfold. Choose **Moving half → Left half / Right half** to match the
    side you swing. These refer to the phone's natural portrait orientation.
 
-Stationary projection requires Android 13+. It uses the last flat page, so content
+Stationary diffusion requires Android 13+. It uses the last flat page, so content
 is briefly frozen during a fold, and the projected overlay receives touches until
-it clears so taps cannot reach hidden controls. The other half and crease remain fixed; only the
-moving pane receives perspective compensation and graded diffusion. Without a
+it clears so taps cannot reach hidden controls. Both halves retain their original
+geometry; only the moving pane receives graded diffusion and symmetric optical spread. Without a
 usable image or capture access, FoldFX falls back to compositor blur. Fade and
 Page Turn remain available as separate effects.
 
@@ -59,17 +60,17 @@ otherwise that transition uses live blur. Pause flat to prepare the next fold.
 - `ScreenCaptureService` captures clean endpoint frames through Android's
   accessibility screenshot API. Physical-panel identity is inferred from aspect
   ratio, rather than assuming logical display IDs remain fixed during handoff.
-- `StationaryRenderer` is an original AGSL shader. It projects samples onto a
-  shared virtual image plane, uses cubic distance-from-crease diffusion and
-  shading, and supports display rotation and either moving half. Sampling uses
-  a bounded 5×5 Gaussian kernel on the moving region; the stationary region is a
-  single image sample. System Remove animations disables perspective motion while
-  preserving focus feedback.
+- `StationaryRenderer` is an original AGSL shader. It samples the page at its
+  original coordinates on both halves, uses cubic distance-from-crease diffusion
+  and shading, and supports display rotation and either moving half. A bounded
+  symmetric 5×5 Gaussian kernel changes optical spread on the moving region;
+  the stationary region is a single image sample. It never translates, scales,
+  rotates, or introduces perspective motion into the captured page.
 - Without projection, `FLAG_BLUR_BEHIND` enables the live compositor blur, in 2 px
   steps at 36 dp normal intensity, capped at 120 px. With projection, global blur
   is zero so it cannot wash out the sharp hinge and stationary half.
 
-The visual study that informed the fixed-plane / tracing-paper model is
+The visual study that informed the tracing-paper diffusion model is
 [Why the iPhone Duo fold animation works so well](https://www.empirical.health/blog/why-iphone-duo-fold-animation-works/).
 This project does not contain Apple implementation code or assets.
 
@@ -93,10 +94,18 @@ adb shell am instrument -w com.keeler.foldfx.test/androidx.test.runner.AndroidJU
 Use an unlocked, awake device with overlay permission granted. Open the inner
 screen flat in portrait for the projection test. Tests use a generated calibration
 page, not a private user image, to check that the stationary half remains unchanged
-between fold angles while the moving half changes projection and diffusion. They
+between fold angles while the moving half changes diffusion. Landmark-centroid
+checks verify that moving-side icons retain their original coordinates. They
 also cover blur fallback, early cover onset without easing delay, release after
 sensor noise, service resumption, and cleanup. Screenshots from the generated
 page are saved to the app's external-files `diffusion-qa/` directory by the tests.
+The offscreen GPU test checks both icon positions at four angles for either moving
+half without requiring the phone to be unlocked:
+
+```bash
+adb shell am instrument -w -e class 'com.keeler.foldfx.overlay.StationaryProjectionTest#offscreenGpuKeepsLandmarksPinnedAtEveryAngle' com.keeler.foldfx.test/androidx.test.runner.AndroidJUnitRunner
+```
+
 Reopen FoldFX after instrumentation to resume tracking if left enabled.
 Instrumentation stops the app process. Android may leave its accessibility service
 enabled but disconnected afterward. If capture does not resume, toggle **FoldFX
@@ -123,8 +132,8 @@ screen handoff; also fold the actual phone to judge timing and viewing angle.
   5° reading. Version 0.2.1 attached at 15°–20°. Version 0.3.0 attempts the effect
   on the first motion sample, but cannot postpone shutoff or promise a visible
   cover effect on every fold.
-- **The apparent fixed plane assumes a front-on viewpoint.** There is no eye/head
-  tracking, and an arbitrary physical viewing angle will break the illusion.
+- **The page is fixed to screen coordinates.** Optical spread changes with angle;
+  there is no eye/head tracking or physical perspective compensation.
 - **Snapshots briefly freeze content.** They cannot force the launcher or another
   app to keep its actual layout fixed across screen resizing. A near-flat blend
   returns to the live app; its own layout changes may still be visible.
@@ -143,7 +152,7 @@ screen handoff; also fold the actual phone to judge timing and viewing angle.
 |---|---|
 | Display over other apps | Draw the effect above the current app |
 | Foreground service (`specialUse`) | Keep the hinge watcher alive, with a persistent Pause notification |
-| Optional screenshot-only accessibility service | Hold and project temporary images for stationary diffusion |
+| Optional screenshot-only accessibility service | Hold temporary images for stationary diffusion |
 | Receive boot completed | Restart the watcher after reboot if enabled |
 | Optional battery-optimization exemption | Help the watcher survive OEM power management |
 

@@ -1,7 +1,6 @@
 package com.keeler.foldfx.overlay
 
 import android.graphics.BitmapShader
-import android.animation.ValueAnimator
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RuntimeShader
@@ -10,10 +9,8 @@ import androidx.annotation.RequiresApi
 import com.keeler.foldfx.capture.SnapshotFrames
 import com.keeler.foldfx.optics.FoldOptics
 import com.keeler.foldfx.optics.FoldSurface
-import kotlin.math.cos
-import kotlin.math.sin
 
-/** Projects a frozen page onto a virtual plane; only the folding pane diffuses. */
+/** Keeps the captured page registered to screen pixels; only optical spread changes. */
 @RequiresApi(33)
 internal class StationaryRenderer {
     private val shader = RuntimeShader(SOURCE)
@@ -32,18 +29,14 @@ internal class StationaryRenderer {
     fun draw(canvas: Canvas, width: Int, height: Int, angle: Float, progress: Float,
              intensity: Float, surface: FoldSurface, movingLeft: Boolean, rotation: Int) {
         if (frame == null || width == 0 || height == 0) return
-        val tilt = FoldOptics.radians(angle, surface)
         shader.setFloatUniform("size", width.toFloat(), height.toFloat())
         shader.setFloatUniform("rotation", rotation.toFloat())
-        val motionEnabled = ValueAnimator.areAnimatorsEnabled()
-        shader.setFloatUniform("tiltCos", if (motionEnabled) cos(tilt) else 1f)
-        shader.setFloatUniform("tiltSin", if (motionEnabled) sin(tilt) else 0f)
         shader.setFloatUniform("side", if (movingLeft) -1f else 1f)
         shader.setFloatUniform("inner", if (surface == FoldSurface.INNER) 1f else 0f)
-        shader.setFloatUniform("strength", if (surface == FoldSurface.INNER) sin(tilt) else progress)
+        shader.setFloatUniform("strength", if (surface == FoldSurface.INNER) FoldOptics.diffusionStrength(angle) else progress)
         shader.setFloatUniform("intensity", intensity)
-        // Blend the near-flat frozen page back to the live one, avoiding an endpoint pop.
-        paint.alpha = (progress / 0.08f * 255f).toInt().coerceIn(0, 255)
+        // Hold the page solid until the final focus landing, avoiding a long double image.
+        paint.alpha = (progress / 0.015f * 255f).toInt().coerceIn(0, 255)
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
     }
 
@@ -53,8 +46,6 @@ internal class StationaryRenderer {
             uniform shader image;
             uniform float2 size;
             uniform float2 imageSize;
-            uniform float tiltCos;
-            uniform float tiltSin;
             uniform float side;
             uniform float inner;
             uniform float strength;
@@ -78,21 +69,9 @@ internal class StationaryRenderer {
                 float distance = (panel.x - hinge) * side;
                 float span = inner > 0.5 ? panelSize.x * 0.5 : panelSize.x;
                 float edge = clamp(distance / span, 0.0, 1.0);
-                float camera = panelSize.x * 2.5;
-                float ratio = camera / max(camera - max(distance, 0.0) * tiltSin, panelSize.x);
-                float2 projected = panel;
-                if (distance > 0.0) {
-                    projected.x = hinge + side * distance * tiltCos * ratio;
-                    projected.y = panelSize.y * 0.5 + (panel.y - panelSize.y * 0.5) * ratio;
-                }
-                if (rotation > 0.5 && rotation < 1.5) {
-                    projected = float2(size.x - projected.y, projected.x);
-                } else if (rotation > 1.5 && rotation < 2.5) {
-                    projected = size - projected;
-                } else if (rotation > 2.5) {
-                    projected = float2(projected.y, size.y - projected.x);
-                }
-                float2 uv = projected * imageSize / size;
+                // Identity sampling on BOTH halves. Rotation only locates the crease;
+                // no perspective, translation, scale, or image-edge reveal is applied.
+                float2 uv = p * imageSize / size;
                 float edge3 = edge * edge * edge;
                 float radius = min(96.0, min(imageSize.x, imageSize.y) * 0.055) * edge3 * strength * intensity;
                 half4 color;
@@ -104,7 +83,11 @@ internal class StationaryRenderer {
                         for (int x = -2; x <= 2; x++) {
                             float wx = x == 0 ? 6.0 : (abs(float(x)) == 1.0 ? 4.0 : 1.0);
                             float wy = y == 0 ? 6.0 : (abs(float(y)) == 1.0 ? 4.0 : 1.0);
-                            color += image.eval(uv + float2(float(x), float(y)) * radius * 0.5) * half(wx * wy / 256.0);
+                            // Symmetric optical spread can soften/stretch detail without
+                            // moving the centre of an icon or changing the page geometry.
+                            float2 spread = (rotation > 0.5 && rotation < 1.5) || rotation > 2.5
+                                ? float2(0.5, 0.6) : float2(0.6, 0.5);
+                            color += image.eval(uv + float2(float(x), float(y)) * radius * spread) * half(wx * wy / 256.0);
                         }
                     }
                 }

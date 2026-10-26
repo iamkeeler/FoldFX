@@ -5,25 +5,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FoldOpticsTest {
-    @Test fun flatPageHasIdentityProjection() {
-        for (x in 0..1000 step 10) {
-            for (left in listOf(true, false)) {
-                assertEquals(x.toFloat(), FoldOptics.sampleX(x.toFloat(), 1000f, 180f, left), 0.0001f)
-            }
+    @Test fun flatPageHasNoOpticalSpread() {
+        assertEquals(0f, FoldOptics.diffusionStrength(180f), 0f)
+        assertEquals(0f, FoldOptics.diffusionStrength(200f), 0f)
+    }
+    @Test fun diffusionIncreasesAsInnerScreenCloses() {
+        var previous = 0f
+        for (angle in 180 downTo 0 step 5) {
+            val current = FoldOptics.diffusionStrength(angle.toFloat())
+            assertTrue(current >= previous && current <= 1f)
+            previous = current
         }
     }
-    @Test fun creaseAndStationaryHalfDoNotMove() {
-        for (angle in 0..180 step 5) {
-            assertEquals(500f, FoldOptics.sampleX(500f, 1000f, angle.toFloat(), true), 0f)
-            assertEquals(800f, FoldOptics.sampleX(800f, 1000f, angle.toFloat(), true), 0f)
-            assertEquals(200f, FoldOptics.sampleX(200f, 1000f, angle.toFloat(), false), 0f)
-        }
-    }
-    @Test fun movingPaneLooksOntoAFixedImagePlane() {
-        // A mark 400px from the crease on a 60° tilted pane projects much
-        // closer to the crease in the fixed image, countering physical rotation.
-        val projected = FoldOptics.sampleX(100f, 1000f, 120f, true)
-        assertTrue(projected > 250f && projected < 300f)
+    @Test fun invalidAngleCannotLeaveOpticsActive() {
+        assertEquals(0f, FoldOptics.diffusionStrength(Float.NaN), 0f)
+        assertEquals(0f, FoldOptics.diffusionStrength(Float.POSITIVE_INFINITY), 0f)
     }
     @Test fun diffusionIsConcentratedAtTheFreeEdge() {
         assertEquals(0f, FoldOptics.edgeWeight(0f), 0f)

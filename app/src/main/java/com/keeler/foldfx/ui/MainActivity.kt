@@ -229,7 +229,7 @@ private fun FoldFxSettingsScreen(effects: List<FoldEffect>) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("Stationary content", style = MaterialTheme.typography.titleMedium)
-                                Text("The page stays behind the folding glass while focus changes.")
+                                Text("Icons stay in place while diffusion changes with the fold angle.")
                             }
                             Switch(
                                 checked = stationary,
@@ -242,7 +242,7 @@ private fun FoldFxSettingsScreen(effects: List<FoldEffect>) {
                             )
                         }
                         if (Build.VERSION.SDK_INT < 33) {
-                            Text("Stationary projection needs Android 13 or newer. Live blur is available.")
+                            Text("Stationary diffusion needs Android 13 or newer. Live blur is available.")
                         } else if (stationary) {
                             Text("Uses the last flat screen image during each fold. Live interaction returns when flat. Images stay in memory and are never saved or shared.")
                             if (captureConnected) {
