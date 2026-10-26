@@ -98,6 +98,10 @@ also cover blur fallback, early cover onset without easing delay, release after
 sensor noise, service resumption, and cleanup. Screenshots from the generated
 page are saved to the app's external-files `diffusion-qa/` directory by the tests.
 Reopen FoldFX after instrumentation to resume tracking if left enabled.
+Instrumentation stops the app process. Android may leave its accessibility service
+enabled but disconnected afterward. If capture does not resume, toggle **FoldFX
+stationary diffusion** off and on in Accessibility, then return to FoldFX. Run
+instrumentation before enabling capture when preparing a personal device.
 
 Use direct instrumentation on personal devices: `connectedDebugAndroidTest` can
 uninstall the app and erase its settings during cleanup.
