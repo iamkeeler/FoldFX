@@ -19,6 +19,14 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_EFFECT, EffectCatalog.defaultId) ?: EffectCatalog.defaultId
         set(v) = sp.edit { putString(KEY_EFFECT, v) }
 
+    var stationaryContent: Boolean
+        get() = sp.getBoolean("stationary_content", true)
+        set(v) = sp.edit { putBoolean("stationary_content", v) }
+
+    var movingLeft: Boolean
+        get() = sp.getBoolean("moving_left", true)
+        set(v) = sp.edit { putBoolean("moving_left", v) }
+
     /** Visual intensity multiplier, 0.5x..1.5x. */
     var intensity: Float
         get() = sp.getFloat(KEY_INTENSITY, 1f)

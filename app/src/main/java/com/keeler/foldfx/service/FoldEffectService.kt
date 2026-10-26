@@ -43,6 +43,8 @@ class FoldEffectService : Service() {
         overlays = FoldOverlayManager(applicationContext).apply {
             setEffectId(prefs.effectId)
             intensity = prefs.intensity
+            stationaryContent = prefs.stationaryContent
+            movingLeft = prefs.movingLeft
         }
         createChannel()
     }
@@ -58,6 +60,8 @@ class FoldEffectService : Service() {
                 // Settings changed while running: apply live, no re-registration.
                 overlays.setEffectId(prefs.effectId)
                 overlays.intensity = prefs.intensity
+                overlays.stationaryContent = prefs.stationaryContent
+                overlays.movingLeft = prefs.movingLeft
                 if (started) return START_STICKY
                 // else: the service was (re)created just for this — fall
                 // through and bring it fully up below instead of lingering
@@ -80,7 +84,7 @@ class FoldEffectService : Service() {
         overlays.start()
         scope.launch {
             hinge.angle.collect { angle ->
-                overlays.setTargetProgress(FoldProgress.fromAngle(angle))
+                overlays.setHingeAngle(angle)
             }
         }
         return START_STICKY

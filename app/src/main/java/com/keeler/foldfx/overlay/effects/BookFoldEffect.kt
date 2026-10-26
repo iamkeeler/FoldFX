@@ -11,7 +11,7 @@ import android.graphics.Paint
 class BookFoldEffect : FoldEffect {
 
     override val id = "book_fold"
-    override val displayName = "Book Fold"
+    override val displayName = "Duo Diffusion"
 
     private val shade = Paint().apply { color = 0xFF000000.toInt() }
     private val diffusion = Paint().apply { color = 0xFFFFFFFF.toInt() }

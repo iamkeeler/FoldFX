@@ -1,17 +1,27 @@
 package com.keeler.foldfx.overlay
 
 import android.content.Context
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
+import android.app.KeyguardManager
 import android.content.pm.ApplicationInfo
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
+import android.os.Build
 import android.util.Log
 import android.view.Choreographer
 import android.view.Display
 import android.view.WindowManager
 import com.keeler.foldfx.overlay.effects.EffectCatalog
 import com.keeler.foldfx.overlay.effects.FoldEffect
+import com.keeler.foldfx.capture.ScreenCaptureService
+import com.keeler.foldfx.capture.SnapshotFrames
+import com.keeler.foldfx.optics.FoldSurface
+import com.keeler.foldfx.service.FoldProgress
+import androidx.core.content.ContextCompat
 import java.util.function.Consumer
 import kotlin.math.abs
 import kotlin.math.exp
@@ -40,6 +50,19 @@ class FoldOverlayManager(private val appContext: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val choreographer = Choreographer.getInstance()
     private val traceEnabled = appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+    private val keyguard = appContext.getSystemService(KeyguardManager::class.java)
+    private val unlockReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (!running) return
+            if (keyguard.isKeyguardLocked || intent?.action == Intent.ACTION_SCREEN_OFF) {
+                for (id in overlays.keys.toList()) detach(id)
+            } else {
+                for (display in displayManager.displays) reconcileDisplay(display.displayId)
+                captureAtRest()
+                scheduleFrame()
+            }
+        }
+    }
 
     private data class AttachedOverlay(
         val windowManager: WindowManager,
@@ -55,6 +78,54 @@ class FoldOverlayManager(private val appContext: Context) {
     // Reuse them until the display disappears; creating one per sensor event is expensive.
     private val windowContexts = mutableMapOf<Int, Context>()
     private val attachRetries = mutableMapOf<Int, Runnable>()
+    private val pendingSnapshots = mutableMapOf<Int, Runnable>()
+    private var targetAngle: Float? = null
+    private var renderedAngle = 180f
+    private var earlyRelease: Runnable? = null
+
+    var stationaryContent = true
+        set(value) {
+            field = value
+            if (!value) {
+                SnapshotFrames.clear()
+                overlays.values.forEach { it.view.setSnapshot(null) }
+            }
+            if (running) scheduleFrame()
+        }
+    var movingLeft = true
+        set(value) {
+            field = value
+            overlays.values.forEach { it.view.movingLeft = value; it.view.invalidate() }
+        }
+    private val canProject: Boolean
+        get() = stationaryContent && activeEffect.id == "book_fold" && Build.VERSION.SDK_INT >= 33
+
+    private val captureTick = object : Runnable {
+        override fun run() {
+            if (!running) return
+            captureAtRest()
+            mainHandler.postDelayed(this, 800L)
+        }
+    }
+
+    private fun surface(display: Display): FoldSurface =
+        FoldSurface.fromSize(display.mode.physicalWidth, display.mode.physicalHeight)
+
+    private fun captureAtRest() {
+        val angle = targetAngle ?: return
+        if (!canProject || (angle > 1f && angle < 174f) || overlays.isNotEmpty()) return
+        for (display in displayManager.displays) {
+            if (display.state != Display.STATE_ON) continue
+            val kind = surface(display)
+            val rotation = display.rotation
+            ScreenCaptureService.request(display.displayId, kind, rotation, accept = {
+                val current = displayManager.getDisplay(display.displayId)
+                running && canProject && overlays.isEmpty() && current?.state == Display.STATE_ON &&
+                    surface(current) == kind && current.rotation == rotation &&
+                    targetAngle?.let { it <= 1f || it >= 174f } == true
+            })
+        }
+    }
 
     var activeEffect: FoldEffect = EffectCatalog.all.first()
         private set
@@ -85,6 +156,7 @@ class FoldOverlayManager(private val appContext: Context) {
             detach(displayId)
             cancelAttachRetry(displayId)
             windowContexts.remove(displayId)
+            pendingSnapshots.remove(displayId)?.let { mainHandler.removeCallbacks(it) }
         }
 
         override fun onDisplayChanged(displayId: Int) {
@@ -101,6 +173,7 @@ class FoldOverlayManager(private val appContext: Context) {
         if (traceEnabled) Log.d(TRACE_TAG, "display=$displayId state=${display.state} target=$targetProgress attached=${overlays.containsKey(displayId)}")
         if (display.state == Display.STATE_ON && targetProgress > ATTACH_THRESHOLD) {
             maybeAttach(display)
+            scheduleFrame()
         } else {
             cancelAttachRetry(displayId)
             if (display.state != Display.STATE_ON) detach(displayId)
@@ -131,6 +204,10 @@ class FoldOverlayManager(private val appContext: Context) {
             val tau = if (targetProgress > renderedProgress) DEFOCUS_TAU_SEC else FOCUS_TAU_SEC
             val alpha = 1f - exp(-dt / tau)
             renderedProgress += (targetProgress - renderedProgress) * alpha
+            targetAngle?.let { angle ->
+                renderedAngle += (angle - renderedAngle) * alpha
+                if (abs(angle - renderedAngle) < 0.05f) renderedAngle = angle
+            }
             if (abs(targetProgress - renderedProgress) < SETTLE_EPSILON) {
                 renderedProgress = targetProgress
             }
@@ -144,7 +221,7 @@ class FoldOverlayManager(private val appContext: Context) {
                 targetProgress = 0f
             }
 
-            if (renderedProgress != targetProgress) {
+            if (renderedProgress != targetProgress || targetAngle?.let { it != renderedAngle } == true) {
                 scheduleFrame()
             } else {
                 lastFrameNanos = 0L // parked: zero cost at rest
@@ -155,13 +232,27 @@ class FoldOverlayManager(private val appContext: Context) {
     fun start() {
         if (running) return
         running = true
+        SnapshotFrames.onInvalidated = {
+            overlays.values.forEach { it.view.setSnapshot(null) }
+            if (running) scheduleFrame()
+        }
         targetProgress = 0f
         renderedProgress = 0f
         lastFrameNanos = 0L
         displayManager.registerDisplayListener(displayListener, mainHandler)
+        ContextCompat.registerReceiver(appContext, unlockReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_USER_PRESENT)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+        }, ContextCompat.RECEIVER_NOT_EXPORTED)
         blurSupported = windowManager().isCrossWindowBlurEnabled
         if (traceEnabled) Log.d(TRACE_TAG, "overlay manager started blurEnabled=$blurSupported")
         windowManager().addCrossWindowBlurEnabledListener(appContext.mainExecutor, blurListener)
+        // Warm the window context before the first 5° event's short cover-screen window.
+        for (display in displayManager.displays) {
+            if (display.state == Display.STATE_ON) runCatching { overlayContext(display) }
+        }
+        mainHandler.post(captureTick)
     }
 
     fun stop() {
@@ -171,10 +262,16 @@ class FoldOverlayManager(private val appContext: Context) {
         frameCallbackScheduled = false
         mainHandler.removeCallbacksAndMessages(null)
         attachRetries.clear()
+        pendingSnapshots.clear()
+        earlyRelease = null
         displayManager.unregisterDisplayListener(displayListener)
+        appContext.unregisterReceiver(unlockReceiver)
         runCatching { windowManager().removeCrossWindowBlurEnabledListener(blurListener) }
         for (id in overlays.keys.toList()) detach(id)
         windowContexts.clear()
+        SnapshotFrames.onInvalidated = null
+        SnapshotFrames.clear()
+        targetAngle = null
         targetProgress = 0f
         renderedProgress = 0f
     }
@@ -186,7 +283,40 @@ class FoldOverlayManager(private val appContext: Context) {
             // Invalidate: attached views may be converged (e.g. phone held
             // half-open) and wouldn't otherwise redraw on a settings change.
             overlays.values.forEach { o -> o.view.effect = it; o.view.invalidate() }
+            if (!canProject) overlays.values.forEach { o -> o.view.setSnapshot(null) }
+            if (running) scheduleFrame()
         }
+    }
+
+    /** Physical angle is retained for projection instead of collapsing it to blur alone. */
+    fun setHingeAngle(angle: Float?) {
+        earlyRelease?.let { mainHandler.removeCallbacks(it) }
+        earlyRelease = null
+        val valid = angle?.takeIf { it.isFinite() }?.coerceIn(0f, 180f)
+        val previous = targetAngle
+        targetAngle = valid
+        if (valid == null) {
+            setTargetProgress(0f)
+            return
+        }
+        if (previous == null) renderedAngle = valid
+        val progress = FoldProgress.fromAngle(valid)
+        // Catch the first crack immediately: easing away most of 54 ms hides the cover effect.
+        if (valid in 1f..6f && (previous == null || previous <= 1f)) {
+            renderedProgress = progress
+            renderedAngle = valid
+        }
+        setTargetProgress(progress)
+        if (valid in 1f..6f) {
+            // A sensor idling at 5° must not leave a closed cover permanently frosted.
+            val release = Runnable {
+                earlyRelease = null
+                if (targetAngle == valid) setTargetProgress(0f)
+            }
+            earlyRelease = release
+            mainHandler.postDelayed(release, 240L)
+        }
+        captureAtRest()
     }
 
     /**
@@ -206,6 +336,8 @@ class FoldOverlayManager(private val appContext: Context) {
         } else 0f
         if (targetProgress == 0f) {
             for (id in attachRetries.keys.toList()) cancelAttachRetry(id)
+            for (pending in pendingSnapshots.values) mainHandler.removeCallbacks(pending)
+            pendingSnapshots.clear()
         }
         if (targetProgress > ATTACH_THRESHOLD) {
             for (display in displayManager.displays) {
@@ -236,9 +368,29 @@ class FoldOverlayManager(private val appContext: Context) {
             // only progress is pushed per frame (and only invalidates on
             // real change, see FoldEffectView).
             overlay.view.progress = renderedProgress
-            val quantized = blurRadius(overlay.maxRadiusPx)
-            if (overlay.lastRadius != quantized) {
+            val display = displayManager.getDisplay(id)
+            if (display != null) {
+                overlay.view.displayRotation = display.rotation
+                val kind = surface(display)
+                if (overlay.view.surface != kind || overlay.view.snapshotRotation?.let { it != display.rotation } == true) {
+                    overlay.view.surface = kind
+                    overlay.view.setSnapshot(null)
+                }
+                if (canProject && !overlay.view.hasProjection) {
+                    overlay.view.setSnapshot(SnapshotFrames.get(kind, display.rotation))
+                } else if (!canProject) overlay.view.setSnapshot(null)
+            }
+            overlay.view.hingeAngle = renderedAngle
+            // A frozen page supplies its own spatial blur. Global blur would erase the crease.
+            val quantized = if (overlay.view.hasProjection) 0 else blurRadius(overlay.maxRadiusPx)
+            // Android caps pass-through overlays at its obscuring-opacity limit.
+            // A frozen page must be solid and must not send taps to hidden controls.
+            val touchFlags = if (overlay.view.hasProjection) {
+                overlay.params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+            } else overlay.params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            if (overlay.lastRadius != quantized || overlay.params.flags != touchFlags) {
                 overlay.lastRadius = quantized
+                overlay.params.flags = touchFlags
                 overlay.params.setBlurBehindRadius(quantized)
                 // The overlay permission can be revoked mid-fold, tearing our
                 // windows down out from under us: never let the frame
@@ -257,30 +409,64 @@ class FoldOverlayManager(private val appContext: Context) {
     private fun windowManager(): WindowManager =
         appContext.getSystemService(WindowManager::class.java)
 
-    private fun maybeAttach(display: Display, retryAttempt: Int = 0) {
+    private fun overlayContext(display: Display): Context = windowContexts.getOrPut(display.displayId) {
+        appContext.createWindowContext(display, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null)
+    }
+
+    private fun maybeAttach(display: Display, retryAttempt: Int = 0, allowCapture: Boolean = true) {
         if (!running) return
+        if (keyguard.isKeyguardLocked) return
         if (display.state != Display.STATE_ON) return // may have changed during the settle delay
         if (overlays.containsKey(display.displayId)) return
         if (targetProgress <= ATTACH_THRESHOLD) return
-        try {
-            val windowContext = windowContexts.getOrPut(display.displayId) {
-                appContext.createWindowContext(
-                    display, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null,
-                )
+        val kind = surface(display)
+        val snapshot = if (canProject) SnapshotFrames.get(kind, display.rotation) else null
+        // The inner screen may have a new layout after handoff. Capture that clean page
+        // before attaching, never recursively capture our own projected overlay.
+        if (canProject && kind == FoldSurface.INNER && snapshot == null && allowCapture && ScreenCaptureService.connected.value) {
+            val id = display.displayId
+            if (pendingSnapshots.containsKey(id)) return
+            val rotation = display.rotation
+            val fallback = Runnable {
+                pendingSnapshots.remove(id)
+                displayManager.getDisplay(id)?.let { maybeAttach(it, retryAttempt, false) }
             }
+            pendingSnapshots[id] = fallback
+            val requested = ScreenCaptureService.request(id, kind, rotation, accept = {
+                val current = displayManager.getDisplay(id)
+                running && canProject && !overlays.containsKey(id) && current?.state == Display.STATE_ON &&
+                    surface(current) == kind && current.rotation == rotation
+            }, finished = {
+                pendingSnapshots.remove(id)?.let { mainHandler.removeCallbacks(it) }
+                displayManager.getDisplay(id)?.let { maybeAttach(it, retryAttempt, false) }
+            })
+            if (requested) {
+                if (pendingSnapshots[id] === fallback) mainHandler.postDelayed(fallback, 150L)
+                return
+            }
+            pendingSnapshots.remove(id)
+        }
+        try {
+            val windowContext = overlayContext(display)
             val wm = windowContext.getSystemService(WindowManager::class.java)
             val view = FoldEffectView(windowContext).apply {
                 effect = activeEffect
                 intensity = this@FoldOverlayManager.intensity
                 progress = renderedProgress
+                hingeAngle = renderedAngle
+                surface = kind
+                displayRotation = display.rotation
+                movingLeft = this@FoldOverlayManager.movingLeft
+                setSnapshot(snapshot)
             }
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    (if (view.hasProjection) 0 else WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
                     WindowManager.LayoutParams.FLAG_BLUR_BEHIND,
                 PixelFormat.TRANSLUCENT,
             ).apply {
@@ -295,11 +481,11 @@ class FoldOverlayManager(private val appContext: Context) {
             // Quantized to match pushToOverlays, so the first eased push
             // after attach doesn't fire a redundant updateViewLayout.
             val maxRadiusPx = (BLUR_RADIUS_DP * windowContext.resources.displayMetrics.density).toInt()
-            val initialRadius = blurRadius(maxRadiusPx)
+            val initialRadius = if (view.hasProjection) 0 else blurRadius(maxRadiusPx)
             params.setBlurBehindRadius(initialRadius)
             wm.addView(view, params)
             overlays[display.displayId] = AttachedOverlay(wm, view, params, maxRadiusPx, initialRadius)
-            if (traceEnabled) Log.d(TRACE_TAG, "attached display=${display.displayId} target=$targetProgress radius=$initialRadius attempt=$retryAttempt")
+            if (traceEnabled) Log.d(TRACE_TAG, "attached display=${display.displayId} surface=$kind target=$targetProgress radius=$initialRadius projected=${view.hasProjection} attempt=$retryAttempt")
             cancelAttachRetry(display.displayId)
         } catch (t: Throwable) {
             Log.w(TAG, "Could not attach overlay to display ${display.displayId}", t)
