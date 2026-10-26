@@ -1,6 +1,7 @@
 package com.keeler.foldfx.overlay
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.os.Handler
@@ -38,6 +39,7 @@ class FoldOverlayManager(private val appContext: Context) {
         appContext.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private val choreographer = Choreographer.getInstance()
+    private val traceEnabled = appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
 
     private data class AttachedOverlay(
         val windowManager: WindowManager,
@@ -49,6 +51,10 @@ class FoldOverlayManager(private val appContext: Context) {
 
     /** displayId -> overlay */
     private val overlays = mutableMapOf<Int, AttachedOverlay>()
+    // Window contexts track configuration changes during the cover/inner handoff.
+    // Reuse them until the display disappears; creating one per sensor event is expensive.
+    private val windowContexts = mutableMapOf<Int, Context>()
+    private val attachRetries = mutableMapOf<Int, Runnable>()
 
     var activeEffect: FoldEffect = EffectCatalog.all.first()
         private set
@@ -72,31 +78,39 @@ class FoldOverlayManager(private val appContext: Context) {
 
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) {
-            // Let the newly-on display draw its first frame before we blur
-            // over it; otherwise the effect opens over black.
-            mainHandler.postDelayed({
-                displayManager.getDisplay(displayId)?.let { maybeAttach(it) }
-            }, DISPLAY_SETTLE_DELAY_MS)
+            reconcileDisplay(displayId)
         }
 
-        override fun onDisplayRemoved(displayId: Int) = detach(displayId)
+        override fun onDisplayRemoved(displayId: Int) {
+            detach(displayId)
+            cancelAttachRetry(displayId)
+            windowContexts.remove(displayId)
+        }
 
         override fun onDisplayChanged(displayId: Int) {
             // A display can power on/off with no hinge motion (no sensor
             // events), e.g. pressing power while held half-open: keep overlay
             // membership in sync with the actual display state.
-            val display = displayManager.getDisplay(displayId) ?: return
-            if (display.state == Display.STATE_ON) {
-                if (targetProgress > ATTACH_THRESHOLD) maybeAttach(display)
-            } else {
-                detach(displayId)
-            }
+            reconcileDisplay(displayId)
+        }
+    }
+
+    private fun reconcileDisplay(displayId: Int) {
+        if (!running) return
+        val display = displayManager.getDisplay(displayId) ?: return
+        if (traceEnabled) Log.d(TRACE_TAG, "display=$displayId state=${display.state} target=$targetProgress attached=${overlays.containsKey(displayId)}")
+        if (display.state == Display.STATE_ON && targetProgress > ATTACH_THRESHOLD) {
+            maybeAttach(display)
+        } else {
+            cancelAttachRetry(displayId)
+            if (display.state != Display.STATE_ON) detach(displayId)
         }
     }
 
     private val blurListener = Consumer<Boolean> { enabled ->
         if (running && blurSupported != enabled) {
             blurSupported = enabled
+            if (traceEnabled) Log.d(TRACE_TAG, "blurEnabled=$enabled")
             // Also refresh a stationary half-open device, whose frame loop is parked.
             scheduleFrame()
         }
@@ -146,6 +160,7 @@ class FoldOverlayManager(private val appContext: Context) {
         lastFrameNanos = 0L
         displayManager.registerDisplayListener(displayListener, mainHandler)
         blurSupported = windowManager().isCrossWindowBlurEnabled
+        if (traceEnabled) Log.d(TRACE_TAG, "overlay manager started blurEnabled=$blurSupported")
         windowManager().addCrossWindowBlurEnabledListener(appContext.mainExecutor, blurListener)
     }
 
@@ -155,9 +170,11 @@ class FoldOverlayManager(private val appContext: Context) {
         choreographer.removeFrameCallback(frameCallback)
         frameCallbackScheduled = false
         mainHandler.removeCallbacksAndMessages(null)
+        attachRetries.clear()
         displayManager.unregisterDisplayListener(displayListener)
         runCatching { windowManager().removeCrossWindowBlurEnabledListener(blurListener) }
         for (id in overlays.keys.toList()) detach(id)
+        windowContexts.clear()
         targetProgress = 0f
         renderedProgress = 0f
     }
@@ -187,6 +204,9 @@ class FoldOverlayManager(private val appContext: Context) {
         targetProgress = if (progress.isFinite() && progress > ATTACH_THRESHOLD) {
             progress.coerceAtMost(1f)
         } else 0f
+        if (targetProgress == 0f) {
+            for (id in attachRetries.keys.toList()) cancelAttachRetry(id)
+        }
         if (targetProgress > ATTACH_THRESHOLD) {
             for (display in displayManager.displays) {
                 if (display.state == Display.STATE_ON) maybeAttach(display)
@@ -237,15 +257,19 @@ class FoldOverlayManager(private val appContext: Context) {
     private fun windowManager(): WindowManager =
         appContext.getSystemService(WindowManager::class.java)
 
-    private fun maybeAttach(display: Display) {
+    private fun maybeAttach(display: Display, retryAttempt: Int = 0) {
         if (!running) return
         if (display.state != Display.STATE_ON) return // may have changed during the settle delay
         if (overlays.containsKey(display.displayId)) return
         if (targetProgress <= ATTACH_THRESHOLD) return
         try {
-            val displayContext = appContext.createDisplayContext(display)
-            val wm = displayContext.getSystemService(WindowManager::class.java)
-            val view = FoldEffectView(displayContext).apply {
+            val windowContext = windowContexts.getOrPut(display.displayId) {
+                appContext.createWindowContext(
+                    display, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null,
+                )
+            }
+            val wm = windowContext.getSystemService(WindowManager::class.java)
+            val view = FoldEffectView(windowContext).apply {
                 effect = activeEffect
                 intensity = this@FoldOverlayManager.intensity
                 progress = renderedProgress
@@ -270,23 +294,44 @@ class FoldOverlayManager(private val appContext: Context) {
             }
             // Quantized to match pushToOverlays, so the first eased push
             // after attach doesn't fire a redundant updateViewLayout.
-            val maxRadiusPx = (BLUR_RADIUS_DP * displayContext.resources.displayMetrics.density).toInt()
+            val maxRadiusPx = (BLUR_RADIUS_DP * windowContext.resources.displayMetrics.density).toInt()
             val initialRadius = blurRadius(maxRadiusPx)
             params.setBlurBehindRadius(initialRadius)
             wm.addView(view, params)
             overlays[display.displayId] = AttachedOverlay(wm, view, params, maxRadiusPx, initialRadius)
+            if (traceEnabled) Log.d(TRACE_TAG, "attached display=${display.displayId} target=$targetProgress radius=$initialRadius attempt=$retryAttempt")
+            cancelAttachRetry(display.displayId)
         } catch (t: Throwable) {
             Log.w(TAG, "Could not attach overlay to display ${display.displayId}", t)
+            // A failed attach must not depend on another hinge reading to recover:
+            // on-change sensors may already have reached their final posture.
+            if (retryAttempt < ATTACH_RETRY_DELAYS_MS.size && !attachRetries.containsKey(display.displayId)) {
+                val displayId = display.displayId
+                val retry = Runnable {
+                    attachRetries.remove(displayId)
+                    if (running && targetProgress > ATTACH_THRESHOLD) {
+                        displayManager.getDisplay(displayId)?.let { maybeAttach(it, retryAttempt + 1) }
+                    }
+                }
+                attachRetries[displayId] = retry
+                mainHandler.postDelayed(retry, ATTACH_RETRY_DELAYS_MS[retryAttempt])
+            }
         }
+    }
+
+    private fun cancelAttachRetry(displayId: Int) {
+        attachRetries.remove(displayId)?.let { mainHandler.removeCallbacks(it) }
     }
 
     private fun detach(displayId: Int) {
         val overlay = overlays.remove(displayId) ?: return
+        if (traceEnabled) Log.d(TRACE_TAG, "detached display=$displayId target=$targetProgress")
         runCatching { overlay.windowManager.removeView(overlay.view) }
     }
 
     companion object {
         private const val TAG = "FoldOverlayManager"
+        private const val TRACE_TAG = "FoldFXTrace"
         private const val ATTACH_THRESHOLD = 0.03f
         private const val DETACH_THRESHOLD = 0.012f
         private const val BLUR_QUANTUM_PX = 2
@@ -295,6 +340,6 @@ class FoldOverlayManager(private val appContext: Context) {
         private const val DEFOCUS_TAU_SEC = 0.045f
         private const val FOCUS_TAU_SEC = 0.07f
         private const val SETTLE_EPSILON = 0.001f
-        private const val DISPLAY_SETTLE_DELAY_MS = 120L
+        private val ATTACH_RETRY_DELAYS_MS = longArrayOf(32L, 96L, 192L)
     }
 }

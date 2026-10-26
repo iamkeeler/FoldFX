@@ -71,6 +71,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // An update or instrumentation run can stop the process while leaving
+        // the user's enabled preference intact. Reconcile it on a visible launch.
+        if (Prefs(this).enabled && Settings.canDrawOverlays(this)) {
+            FoldEffectService.start(this)
+        }
         resumeTick++
     }
 }

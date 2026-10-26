@@ -38,6 +38,10 @@ hinge-angle sensor → FoldEffectService → target progress 0..1 → FoldOverla
   normal intensity, capped at 120 px), and the overlay extends into system-bar
   and display-cutout areas. The overlay attaches when progress passes 0.03 and
   releases once the eased progress settles back near zero.
+  Each display uses a cached application-overlay window context so configuration
+  follows the inner/outer display handoff. A newly available display is attached
+  immediately, with at most three delayed retries (32/96/192 ms) after an attach
+  failure; pending retries are canceled when the effect settles or stops.
 - **Effects** implement `FoldEffect` (`overlay/effects/`), listed in one place:
   `EffectCatalog.all`. v1 ships three:
   - **Book Fold** — gradual optical defocus with a subtle diffusion veil; no hard spine or bright sweep masking the page
@@ -75,13 +79,20 @@ The device test needs an unlocked, awake, blur-capable device with FoldFX's over
 permission granted. It drives the real overlay through sharp, diffused, intensity
 changes, direction reversal, and refocused states; checks the window's blur flags
 and radius; and verifies the overlay is released. Settings are preserved, but
-instrumentation may terminate the app process afterward: reopen FoldFX and toggle
-**Fold effects** off and on to resume hinge tracking. Screenshots are saved under
+instrumentation may terminate the app process afterward: reopen FoldFX to resume
+hinge tracking if you left it enabled. Screenshots are saved under
 the app's external-files `diffusion-qa/`
 directory. This controlled test does not simulate the physical display handoff;
 also fold/unfold the actual device to judge that timing.
 Use the direct instrumentation command above on a personal device:
 `connectedDebugAndroidTest` can uninstall the app and clear its settings during cleanup.
+
+To diagnose missed physical transitions in a debug build, capture
+`adb logcat -v threadtime FoldFXTrace:D FoldOverlayManager:W '*:S'` while folding
+and unfolding. The trace records coarse hinge changes, display callbacks, blur
+availability and overlay attachment without screen contents. Release builds do
+not emit these debug traces. A successful controlled overlay test alone does not
+prove reliable activation through the system's physical display handoff.
 
 ## Permissions — why each one
 

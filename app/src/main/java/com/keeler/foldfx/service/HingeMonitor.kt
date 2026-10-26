@@ -1,10 +1,12 @@
 package com.keeler.foldfx.service
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -20,6 +22,9 @@ fun SensorManager.hingeSensor(): Sensor? = getDefaultSensor(Sensor.TYPE_HINGE_AN
  */
 class HingeMonitor(context: Context) {
 
+    private val traceEnabled = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+    private var lastTraceAngle: Float? = null
+
     private val sensorManager =
         context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
@@ -32,7 +37,13 @@ class HingeMonitor(context: Context) {
 
     private val listener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
-            _angle.value = event.values[0]
+            val angle = event.values[0]
+            _angle.value = angle
+            if (traceEnabled && (lastTraceAngle == null || kotlin.math.abs(angle - lastTraceAngle!!) >= 10f ||
+                    ((angle <= 6f || angle >= 174f) && angle != lastTraceAngle))) {
+                lastTraceAngle = angle
+                Log.d("FoldFXTrace", "hinge=$angle")
+            }
         }
 
         override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) = Unit
@@ -47,11 +58,13 @@ class HingeMonitor(context: Context) {
             // Accepted tradeoff: the sensor streams 24/7 while enabled, even
             // parked at rest. Batching (maxReportLatencyUs) would cut wakeups
             // but add exactly the latency this effect can't afford.
-            sensorManager.registerListener(listener, it, SensorManager.SENSOR_DELAY_GAME)
+            val registered = sensorManager.registerListener(listener, it, SensorManager.SENSOR_DELAY_GAME)
+            if (traceEnabled) Log.d("FoldFXTrace", "hinge listener registered=$registered")
         }
     }
 
     fun stop() {
         sensorManager.unregisterListener(listener)
+        if (traceEnabled) Log.d("FoldFXTrace", "hinge listener stopped")
     }
 }

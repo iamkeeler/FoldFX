@@ -1,6 +1,7 @@
 package com.keeler.foldfx.overlay
 
 import android.app.KeyguardManager
+import android.app.ActivityManager
 import android.content.Intent
 import android.graphics.Bitmap
 import android.os.SystemClock
@@ -31,10 +32,20 @@ class FoldDiffusionTest {
 
         val wasEnabled = Prefs(context).enabled
         var manager: FoldOverlayManager? = null
+        instrumentation.runOnMainSync { FoldEffectService.stop(context) }
+        instrumentation.waitForIdleSync()
         val activity = instrumentation.startActivitySync(
             Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
         try {
+            instrumentation.waitForIdleSync()
+            if (wasEnabled) {
+                @Suppress("DEPRECATION")
+                val resumed = context.getSystemService(ActivityManager::class.java)
+                    .getRunningServices(Int.MAX_VALUE)
+                    .any { it.service.className == FoldEffectService::class.java.name && it.foreground }
+                assertTrue("Reopening settings must resume an enabled hinge service", resumed)
+            }
             instrumentation.runOnMainSync { FoldEffectService.stop(context) }
             instrumentation.waitForIdleSync()
             instrumentation.runOnMainSync {
@@ -51,6 +62,7 @@ class FoldDiffusionTest {
                     val views = WindowInspector.getGlobalWindowViews().filterIsInstance<FoldEffectView>()
                     assertTrue("Expected an attached fold overlay", views.isNotEmpty())
                     for (view in views) {
+                        assertTrue("Overlay needs a configuration-aware window context", view.context.isUiContext)
                         val params = view.layoutParams as WindowManager.LayoutParams
                         assertTrue(params.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND != 0)
                         assertTrue(params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE != 0)
