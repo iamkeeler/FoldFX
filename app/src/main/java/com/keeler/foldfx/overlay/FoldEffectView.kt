@@ -2,8 +2,12 @@ package com.keeler.foldfx.overlay
 
 import android.content.Context
 import android.graphics.Canvas
+import android.os.Build
+import android.util.Log
 import android.view.View
 import com.keeler.foldfx.overlay.effects.FoldEffect
+import com.keeler.foldfx.capture.SnapshotFrames
+import com.keeler.foldfx.optics.FoldSurface
 import kotlin.math.abs
 
 /** Full-screen overlay view that delegates all drawing to the active [FoldEffect]. */
@@ -11,6 +15,45 @@ class FoldEffectView(context: Context) : View(context) {
 
     var effect: FoldEffect? = null
     var intensity: Float = 1f
+    var surface = FoldSurface.INNER
+    var movingLeft = true
+    var displayRotation = 0
+    var hingeAngle = 180f
+        set(value) {
+            if (abs(value - field) > 0.001f) {
+                field = value
+                invalidate()
+            }
+        }
+    private var renderer: StationaryRenderer? = null
+    private var projectionUnavailable = false
+    val hasProjection: Boolean get() = renderer != null
+    var snapshotRotation: Int? = null
+        private set
+
+    fun setSnapshot(frame: SnapshotFrames.Frame?) {
+        if (frame == null || Build.VERSION.SDK_INT < 33) {
+            projectionUnavailable = false
+            isClickable = false
+            snapshotRotation = null
+            if (renderer != null) { renderer = null; invalidate() }
+            return
+        }
+        if (projectionUnavailable) return
+        runCatching {
+            val next = renderer ?: StationaryRenderer().also { renderer = it }
+            next.bind(frame)
+            isClickable = true
+            snapshotRotation = frame.rotation
+            invalidate()
+        }.onFailure {
+            projectionUnavailable = true
+            isClickable = false
+            renderer = null
+            snapshotRotation = null
+            Log.w("FoldFXTrace", "Projection unavailable; using live blur", it)
+        }
+    }
 
     var progress: Float = 0f
         set(value) {
@@ -31,6 +74,10 @@ class FoldEffectView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        if (Build.VERSION.SDK_INT >= 33 && renderer != null) {
+            renderer!!.draw(canvas, width, height, hingeAngle, progress, intensity, surface, movingLeft, displayRotation)
+            return
+        }
         effect?.render(canvas, progress, width, height, intensity)
     }
 

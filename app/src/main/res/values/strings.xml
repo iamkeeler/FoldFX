@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="capture_service_name">FoldFX stationary diffusion</string>
+    <string name="capture_service_description">Captures a temporary screen image so content appears anchored while the phone folds. Images stay in memory and are never saved or shared. FoldFX does not read screen text or perform gestures. Turn off Stationary content in FoldFX to stop capture.</string>
     <string name="app_name">FoldFX</string>
 </resources>

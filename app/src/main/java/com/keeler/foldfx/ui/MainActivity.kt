@@ -8,6 +8,7 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -34,6 +35,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
@@ -52,6 +54,9 @@ import com.keeler.foldfx.overlay.effects.FoldEffect
 import com.keeler.foldfx.prefs.Prefs
 import com.keeler.foldfx.service.FoldEffectService
 import com.keeler.foldfx.service.hingeSensor
+import com.keeler.foldfx.capture.ScreenCaptureService
+import com.keeler.foldfx.capture.SnapshotFrames
+import com.keeler.foldfx.optics.FoldSurface
 
 class MainActivity : ComponentActivity() {
 
@@ -71,6 +76,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // An update or instrumentation run can stop the process while leaving
+        // the user's enabled preference intact. Reconcile it on a visible launch.
+        if (Prefs(this).enabled && Settings.canDrawOverlays(this)) {
+            FoldEffectService.start(this)
+        }
         resumeTick++
     }
 }
@@ -113,6 +123,10 @@ private fun FoldFxSettingsScreen(effects: List<FoldEffect>) {
     var enabled by remember { mutableStateOf(prefs.enabled) }
     var effectId by remember { mutableStateOf(prefs.effectId) }
     var intensity by remember { mutableFloatStateOf(prefs.intensity) }
+    var stationary by remember { mutableStateOf(prefs.stationaryContent) }
+    var movingLeft by remember { mutableStateOf(prefs.movingLeft) }
+    val captureConnected by ScreenCaptureService.connected.collectAsState()
+    val availableFrames by SnapshotFrames.available.collectAsState()
 
     val hasOverlayPermission = Settings.canDrawOverlays(context)
     val batteryExempt = remember {
@@ -204,6 +218,63 @@ private fun FoldFxSettingsScreen(effects: List<FoldEffect>) {
                                 onClick = null,
                             )
                             Text(effect.displayName, modifier = Modifier.padding(start = 8.dp))
+                        }
+                    }
+                }
+            }
+
+            if (effectId == "book_fold") {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Stationary content", style = MaterialTheme.typography.titleMedium)
+                                Text("Icons stay in place while diffusion changes with the fold angle.")
+                            }
+                            Switch(
+                                checked = stationary,
+                                enabled = Build.VERSION.SDK_INT >= 33,
+                                onCheckedChange = {
+                                    stationary = it
+                                    prefs.stationaryContent = it
+                                    if (enabled) FoldEffectService.refresh(context)
+                                },
+                            )
+                        }
+                        if (Build.VERSION.SDK_INT < 33) {
+                            Text("Stationary diffusion needs Android 13 or newer. Live blur is available.")
+                        } else if (stationary) {
+                            Text("Uses the last flat screen image during each fold. Live interaction returns when flat. Images stay in memory and are never saved or shared.")
+                            if (captureConnected) {
+                                Text("Screen capture enabled", color = MaterialTheme.colorScheme.primary)
+                                Text(if (FoldSurface.INNER in availableFrames) "Inner image ready. Pause flat to refresh it." else "Open the inner display flat and pause briefly to capture its page.")
+                                Text("Protected screens use live blur.")
+                            } else {
+                                Text("Live blur is active until screen capture is enabled. In Android Accessibility, enable FoldFX stationary diffusion.")
+                                OutlinedButton(onClick = {
+                                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                                }) { Text("Enable screen capture") }
+                            }
+                            Text("Moving half", style = MaterialTheme.typography.labelLarge)
+                            Row {
+                                listOf(true to "Left half", false to "Right half").forEach { (left, label) ->
+                                    Row(
+                                        Modifier.weight(1f).selectable(
+                                            selected = movingLeft == left,
+                                            role = Role.RadioButton,
+                                            onClick = {
+                                                movingLeft = left
+                                                prefs.movingLeft = left
+                                                if (enabled) FoldEffectService.refresh(context)
+                                            },
+                                        ).padding(vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        RadioButton(selected = movingLeft == left, onClick = null)
+                                        Text(label, Modifier.padding(start = 8.dp))
+                                    }
+                                }
+                            }
                         }
                     }
                 }
