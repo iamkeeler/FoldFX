@@ -1,8 +1,9 @@
 # FoldFX
 
 System-wide fold/unfold transition effects for Android foldables — a book-opening
-effect: as the hinge moves, the screen blurs and a light sweep travels
-across the folding glass, then everything settles as the device goes flat.
+effect: as the hinge starts to move, the actual page gradually diffuses and
+defocuses. It stays soft while angled, then returns to sharp focus as the device
+settles fully open or closed. Reversing the hinge retraces the same focus curve.
 
 This is an **experimental tech demo**, not a polished product. See [Limitations](#limitations).
 
@@ -22,19 +23,24 @@ hinge-angle sensor → FoldEffectService → target progress 0..1 → FoldOverla
   (see below).
 - **`FoldEffectService`** (foreground service, `specialUse`) maps angle to progress:
   a 6° dead zone at each settled end (real sensors idle a few degrees off 0°/180°),
-  then smoothstep easing — 0 when settled, peaking at 1 mid-fold (~90°).
+  then smoothstep easing — 0 when settled, reaching 1 at 60°, staying fully
+  diffused through 120°, and easing back to 0 by 174°. Missing or invalid readings
+  release the effect.
 - **`FoldOverlayManager`** eases the rendered progress toward the sensor target on a
-  `Choreographer` loop (time-based exponential, ~90 ms time constant — smooth on
-  60/90/120 Hz, and the loop parks itself at rest, costing nothing when settled).
+  `Choreographer` loop (time-based exponential, 45 ms defocus / 70 ms refocus time
+  constants — smooth on 60/90/120 Hz). The loop parks at any stable angle, including
+  half-open, and wakes for hinge, intensity, or blur-availability changes.
   It adds a transparent `TYPE_APPLICATION_OVERLAY` window to every display that is
   on (inner + outer during the handoff) and drives the blur radius from progress.
-  Blur pushes are quantized to 6 px (each one is a WindowManager IPC), the maximum
-  radius is density-scaled (48 dp), and the overlay covers the display cutout so
-  there's no unblurred notch. The overlay attaches when progress passes 0.03 and
+  Blur behind is explicitly enabled with `FLAG_BLUR_BEHIND`; a radius alone does
+  not enable Android's compositor blur. Blur pushes use fine 2 px steps (each one
+  is a WindowManager IPC), the radius is density-scaled per display (36 dp at
+  normal intensity, capped at 120 px), and the overlay extends into system-bar
+  and display-cutout areas. The overlay attaches when progress passes 0.03 and
   releases once the eased progress settles back near zero.
 - **Effects** implement `FoldEffect` (`overlay/effects/`), listed in one place:
   `EffectCatalog.all`. v1 ships three:
-  - **Book Fold** — a book-style foldable mimic: blur + darkening scrim + travelling light sweep + spine glow
+  - **Book Fold** — gradual optical defocus with a subtle diffusion veil; no hard spine or bright sweep masking the page
   - **Fade** — a dark fade mid-fold (never fully black; a hint of the screen stays visible)
   - **Page Turn** — a glass page lifting in 3D around the spine
 
@@ -56,6 +62,26 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 Then open **FoldFX**, grant **Display over other apps**, optionally exempt it from battery
 optimization, and flip the master switch. Fold/unfold the device.
+
+### Verify the diffusion
+
+```bash
+./gradlew testDebugUnitTest lintDebug
+./gradlew installDebug installDebugAndroidTest
+adb shell am instrument -w com.keeler.foldfx.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+The device test needs an unlocked, awake, blur-capable device with FoldFX's overlay
+permission granted. It drives the real overlay through sharp, diffused, intensity
+changes, direction reversal, and refocused states; checks the window's blur flags
+and radius; and verifies the overlay is released. Settings are preserved, but
+instrumentation may terminate the app process afterward: reopen FoldFX and toggle
+**Fold effects** off and on to resume hinge tracking. Screenshots are saved under
+the app's external-files `diffusion-qa/`
+directory. This controlled test does not simulate the physical display handoff;
+also fold/unfold the actual device to judge that timing.
+Use the direct instrumentation command above on a personal device:
+`connectedDebugAndroidTest` can uninstall the app and clear its settings during cleanup.
 
 ## Permissions — why each one
 
@@ -82,8 +108,8 @@ The blur is done by the system compositor behind our transparent window.
   "unavailable" in the app.
 - **Blur is capability-gated.** `addCrossWindowBlurEnabledListener` may report blur
   unavailable (GPU limits, battery saver); FoldFX then falls back to the scrim with no blur.
-- Up to ~100 ms of lag between the physical hinge and the overlay is expected (sensor
-  latency + the easing time constant).
+- Some lag between the physical hinge and the overlay is expected (sensor latency
+  plus the 45/70 ms easing time constants).
 
 ## Roadmap
 

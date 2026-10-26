@@ -29,7 +29,7 @@ import kotlin.math.exp
  * exponential ease, so 5° sensor steps become buttery motion on any refresh
  * rate — and the loop parks itself at rest, costing nothing when settled.
  * Blur radius pushes are quantized because each one is a WindowManager IPC +
- * SurfaceFlinger recompute; the cheap GPU-local scrim/sweep carries the fine
+ * SurfaceFlinger recompute; the cheap GPU-local diffusion veil carries the fine
  * motion between pushes.
  */
 class FoldOverlayManager(private val appContext: Context) {
@@ -43,6 +43,7 @@ class FoldOverlayManager(private val appContext: Context) {
         val windowManager: WindowManager,
         val view: FoldEffectView,
         val params: WindowManager.LayoutParams,
+        val maxRadiusPx: Int,
         var lastRadius: Int = -1,
     )
 
@@ -53,18 +54,15 @@ class FoldOverlayManager(private val appContext: Context) {
         private set
     var intensity: Float = 1f
         set(value) {
-            if (value == field) return
-            field = value
-            // Same invalidate reasoning as setEffectId: converged views
-            // don't redraw on their own.
-            overlays.values.forEach { it.view.invalidate() }
+            val bounded = if (value.isFinite()) value.coerceIn(0.5f, 1.5f) else 1f
+            if (bounded == field) return
+            field = bounded
+            overlays.values.forEach { it.view.intensity = bounded; it.view.invalidate() }
+            if (running) scheduleFrame()
         }
 
-    /** Blur radius in px at full progress; density-scaled, the system may clamp it. */
-    val maxBlurRadiusPx: Int =
-        (BLUR_RADIUS_DP * appContext.resources.displayMetrics.density).toInt()
-
-    private var blurSupported: Boolean = true
+    private var blurSupported = false
+    private var running = false
 
     /** Latest target from the sensor; eased toward [renderedProgress] on vsync. */
     private var targetProgress = 0f
@@ -96,7 +94,13 @@ class FoldOverlayManager(private val appContext: Context) {
         }
     }
 
-    private val blurListener = Consumer<Boolean> { enabled -> blurSupported = enabled }
+    private val blurListener = Consumer<Boolean> { enabled ->
+        if (running && blurSupported != enabled) {
+            blurSupported = enabled
+            // Also refresh a stationary half-open device, whose frame loop is parked.
+            scheduleFrame()
+        }
+    }
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -108,9 +112,10 @@ class FoldOverlayManager(private val appContext: Context) {
             }
             lastFrameNanos = frameTimeNanos
 
-            // Time-based exponential ease: frame-rate independent, correct on
-            // 60/90/120 Hz alike. TAU ~90ms tracks a fast fold with no lag feel.
-            val alpha = 1f - exp(-dt / EASE_TAU_SEC)
+            // Frame-rate-independent easing: defocus catches the hinge quickly;
+            // focus returns with a softer landing on 60/90/120 Hz alike.
+            val tau = if (targetProgress > renderedProgress) DEFOCUS_TAU_SEC else FOCUS_TAU_SEC
+            val alpha = 1f - exp(-dt / tau)
             renderedProgress += (targetProgress - renderedProgress) * alpha
             if (abs(targetProgress - renderedProgress) < SETTLE_EPSILON) {
                 renderedProgress = targetProgress
@@ -125,7 +130,7 @@ class FoldOverlayManager(private val appContext: Context) {
                 targetProgress = 0f
             }
 
-            if (renderedProgress != targetProgress || overlays.isNotEmpty()) {
+            if (renderedProgress != targetProgress) {
                 scheduleFrame()
             } else {
                 lastFrameNanos = 0L // parked: zero cost at rest
@@ -134,14 +139,19 @@ class FoldOverlayManager(private val appContext: Context) {
     }
 
     fun start() {
+        if (running) return
+        running = true
         targetProgress = 0f
         renderedProgress = 0f
         lastFrameNanos = 0L
         displayManager.registerDisplayListener(displayListener, mainHandler)
-        windowManager().addCrossWindowBlurEnabledListener(blurListener)
+        blurSupported = windowManager().isCrossWindowBlurEnabled
+        windowManager().addCrossWindowBlurEnabledListener(appContext.mainExecutor, blurListener)
     }
 
     fun stop() {
+        if (!running) return
+        running = false
         choreographer.removeFrameCallback(frameCallback)
         frameCallbackScheduled = false
         mainHandler.removeCallbacksAndMessages(null)
@@ -169,12 +179,14 @@ class FoldOverlayManager(private val appContext: Context) {
      *
      * Sub-attach targets snap to zero: without the snap, a target parked
      * between the detach (0.012) and attach (0.03) thresholds could never
-     * satisfy either condition — spinning the Choreographer forever and/or
-     * leaving a faint overlay stuck. The eased value still gives the smooth
-     * fade-out; release detaches once it settles below 0.012.
+     * satisfy either condition, leaving a faint overlay stuck. The eased value
+     * gives a smooth fade-out; release detaches once it settles below 0.012.
      */
     fun setTargetProgress(progress: Float) {
-        targetProgress = if (progress > ATTACH_THRESHOLD) progress else 0f
+        if (!running) return
+        targetProgress = if (progress.isFinite() && progress > ATTACH_THRESHOLD) {
+            progress.coerceAtMost(1f)
+        } else 0f
         if (targetProgress > ATTACH_THRESHOLD) {
             for (display in displayManager.displays) {
                 if (display.state == Display.STATE_ON) maybeAttach(display)
@@ -190,8 +202,12 @@ class FoldOverlayManager(private val appContext: Context) {
         }
     }
 
-    /** Sub-6px blur steps are invisible; each push is a WindowManager IPC. */
+    /** Fine 2px steps preserve the gradual onset without an IPC for every pixel. */
     private fun quantizeRadius(raw: Int) = raw - (raw % BLUR_QUANTUM_PX)
+
+    private fun blurRadius(maxRadiusPx: Int): Int = if (blurSupported) {
+        quantizeRadius((renderedProgress * maxRadiusPx * intensity).toInt().coerceAtMost(MAX_BLUR_PX))
+    } else 0
 
     /** Pushes eased progress to views and the quantized blur radius. */
     private fun pushToOverlays() {
@@ -200,12 +216,7 @@ class FoldOverlayManager(private val appContext: Context) {
             // only progress is pushed per frame (and only invalidates on
             // real change, see FoldEffectView).
             overlay.view.progress = renderedProgress
-            val radius = if (blurSupported) {
-                (renderedProgress * maxBlurRadiusPx * intensity).toInt()
-            } else {
-                0
-            }
-            val quantized = quantizeRadius(radius)
+            val quantized = blurRadius(overlay.maxRadiusPx)
             if (overlay.lastRadius != quantized) {
                 overlay.lastRadius = quantized
                 overlay.params.setBlurBehindRadius(quantized)
@@ -227,6 +238,7 @@ class FoldOverlayManager(private val appContext: Context) {
         appContext.getSystemService(WindowManager::class.java)
 
     private fun maybeAttach(display: Display) {
+        if (!running) return
         if (display.state != Display.STATE_ON) return // may have changed during the settle delay
         if (overlays.containsKey(display.displayId)) return
         if (targetProgress <= ATTACH_THRESHOLD) return
@@ -244,26 +256,25 @@ class FoldOverlayManager(private val appContext: Context) {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_BLUR_BEHIND,
                 PixelFormat.TRANSLUCENT,
             ).apply {
                 // Draw into the cutout area: otherwise the punch-hole camera
                 // leaves an unblurred notch in the middle of the effect.
                 layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                // The diffusion reaches the edges, including the system-bar areas.
+                setFitInsetsTypes(0)
+                title = "FoldFX diffusion"
             }
             // Quantized to match pushToOverlays, so the first eased push
             // after attach doesn't fire a redundant updateViewLayout.
-            val initialRadius = if (blurSupported) {
-                quantizeRadius((renderedProgress * maxBlurRadiusPx * intensity).toInt())
-            } else {
-                0
-            }
-            if (blurSupported) {
-                params.setBlurBehindRadius(initialRadius)
-            }
+            val maxRadiusPx = (BLUR_RADIUS_DP * displayContext.resources.displayMetrics.density).toInt()
+            val initialRadius = blurRadius(maxRadiusPx)
+            params.setBlurBehindRadius(initialRadius)
             wm.addView(view, params)
-            overlays[display.displayId] = AttachedOverlay(wm, view, params, initialRadius)
+            overlays[display.displayId] = AttachedOverlay(wm, view, params, maxRadiusPx, initialRadius)
         } catch (t: Throwable) {
             Log.w(TAG, "Could not attach overlay to display ${display.displayId}", t)
         }
@@ -278,9 +289,11 @@ class FoldOverlayManager(private val appContext: Context) {
         private const val TAG = "FoldOverlayManager"
         private const val ATTACH_THRESHOLD = 0.03f
         private const val DETACH_THRESHOLD = 0.012f
-        private const val BLUR_QUANTUM_PX = 6
-        private const val BLUR_RADIUS_DP = 48
-        private const val EASE_TAU_SEC = 0.09f
+        private const val BLUR_QUANTUM_PX = 2
+        private const val BLUR_RADIUS_DP = 36
+        private const val MAX_BLUR_PX = 120
+        private const val DEFOCUS_TAU_SEC = 0.045f
+        private const val FOCUS_TAU_SEC = 0.07f
         private const val SETTLE_EPSILON = 0.001f
         private const val DISPLAY_SETTLE_DELAY_MS = 120L
     }
