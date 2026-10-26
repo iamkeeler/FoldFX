@@ -112,6 +112,14 @@ The blur is done by the system compositor behind our transparent window.
   inner/outer displays power on/off and when apps relaunch across them. Our overlay paints
   over that, but the seam is the OS's, not ours. Only Google/Samsung could bake this into
   the compositor (SurfaceFlinger).
+- **The cover display can shut off before diffusion starts.** In three physical
+  open/close cycles on a Pixel 10 Pro Fold running Android 17, the first 5° reading
+  preceded the opening display-OFF callback by only 54–88 ms. The current 6° noise
+  dead zone plus attach threshold did not attach the overlay until a 15°–20°
+  reading. No attachment errors or blur-disable events occurred in that trace.
+  Earlier triggering may improve the brief cover-screen window, but has not been
+  implemented or validated; the lifecycle fixes do not guarantee a continuous
+  cover-to-inner effect, and the app cannot postpone the system's display shutoff.
 - **No effect over the secure lock screen.** If the phone is locked when it opens, nothing draws.
 - **Needs the continuous hinge-angle sensor.** Pixel Fold / 9 Pro Fold / 10 Pro Fold report
   it (5° steps); newer Galaxy Z Folds report accurate angles; older Folds only report
